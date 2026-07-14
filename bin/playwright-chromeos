@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+token_file="${PLAYWRIGHT_CHROMEOS_TOKEN_FILE:-$HOME/.config/playwright-chromeos/extension-token}"
+session="${PLAYWRIGHT_CHROMEOS_SESSION:-chromeos}"
+browser="${PLAYWRIGHT_CHROMEOS_BROWSER:-chrome}"
+output_dir="${PLAYWRIGHT_CHROMEOS_OUTPUT_DIR:-/tmp/playwright-chromeos-${UID}}"
+
+if [[ ! -r "$token_file" ]]; then
+  printf 'Missing Playwright extension token: %s\nRun the skill setup script first.\n' "$token_file" >&2
+  exit 1
+fi
+
+playwright_cli="${PLAYWRIGHT_CHROMEOS_CLI:-$(command -v playwright-cli || true)}"
+if [[ -z "$playwright_cli" || ! -x "$playwright_cli" ]]; then
+  printf 'playwright-cli is not installed. Run the skill setup script first.\n' >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  printf 'python3 is required to redact secrets from command output.\n' >&2
+  exit 1
+fi
+
+connect_helper="${PLAYWRIGHT_CHROMEOS_CONNECT_HELPER:-$(command -v playwright-chromeos-connect || true)}"
+if [[ -z "$connect_helper" || ! -x "$connect_helper" ]]; then
+  printf 'playwright-chromeos-connect is missing. Run the skill setup script first.\n' >&2
+  exit 1
+fi
+
+token="$(<"$token_file")"
+if [[ -z "$token" || "$token" == *$'\n'* ]]; then
+  printf 'The Playwright extension token file is empty or invalid.\n' >&2
+  exit 1
+fi
+
+if [[ "${1:-}" == "connect" ]]; then
+  shift
+  set -- attach "--extension=$browser" "$@"
+fi
+
+mkdir -p "$output_dir"
+export PLAYWRIGHT_MCP_EXTENSION_TOKEN="$token"
+export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$connect_helper"
+export PLAYWRIGHT_MCP_OUTPUT_DIR="$output_dir"
+export NODE_OPTIONS="--dns-result-order=ipv4first${NODE_OPTIONS:+ $NODE_OPTIONS}"
+
+set +e
+"$playwright_cli" "-s=$session" "$@" 2>&1 |
+  PLAYWRIGHT_TOKEN_TO_REDACT="$token" python3 -u -c '
+import os
+import sys
+import urllib.parse
+
+token = os.environ["PLAYWRIGHT_TOKEN_TO_REDACT"]
+encoded = urllib.parse.quote(token, safe="")
+for line in sys.stdin:
+    sys.stdout.write(line.replace(token, "[REDACTED]").replace(encoded, "[REDACTED]"))
+'
+statuses=("${PIPESTATUS[@]}")
+set -e
+exit "${statuses[0]}"

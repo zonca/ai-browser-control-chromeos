@@ -1,0 +1,23 @@
+{
+  "skill_name": "playwright-chromeos",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I am on a Chromebook and the Playwright extension is already installed. Use my live Chrome browser, take me to an account login page, let me sign in myself, then continue the task without opening a fresh browser profile.",
+      "expected_output": "The agent diagnoses or reuses the named chromeos session, connects only if needed, hands login to the user, and continues in the same ChromeOS browser without requesting credentials.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Set this up on a fresh Chromebook for another coding agent. I do not know which dependencies are installed yet.",
+      "expected_output": "The agent runs the doctor, reports only missing prerequisites, asks the user to install the official extension and run the private setup prompt, and never asks for the extension token in chat.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Every browser command opens another Playwright Connect tab and this is pointless. Fix the workflow so separate commands reuse my existing logged-in ChromeOS browser.",
+      "expected_output": "The agent identifies repeated attach or short-lived MCP sessions as the cause, switches to the persistent named Playwright CLI session, and verifies reuse with two separate commands.",
+      "files": []
+    }
+  ]
+}
