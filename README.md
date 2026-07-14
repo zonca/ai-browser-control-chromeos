@@ -1,4 +1,4 @@
-# Playwright ChromeOS Skill
+# AI Browser Control for ChromeOS
 
 Use an AI coding agent running inside a Chromebook Linux development environment
 (Crostini) to control the user's existing ChromeOS Chrome window. The browser keeps
@@ -34,7 +34,7 @@ agents because it is more token-efficient than loading the full MCP tool schema.
 ## How it works
 
 ```text
-AI agent -> playwright-chromeos -> named Playwright CLI daemon
+AI agent -> ai-browser-control-chromeos -> named browser-control daemon
                                       |
                                       v
                               Playwright extension
@@ -62,8 +62,8 @@ normal operation.
 ## Installation
 
 ```bash
-git clone https://github.com/zonca/playwright-chromeos-skill.git
-cd playwright-chromeos-skill
+git clone https://github.com/zonca/ai-browser-control-chromeos.git
+cd ai-browser-control-chromeos
 ./scripts/setup.sh
 ```
 
@@ -71,9 +71,9 @@ The setup script:
 
 1. Checks Node.js, npm, Python, and the ChromeOS URL handler.
 2. Permanently installs `@playwright/cli` if needed.
-3. Installs `playwright-chromeos` and its URL handoff helper in `~/.local/bin`.
+3. Installs `ai-browser-control-chromeos` and its URL handoff helper in `~/.local/bin`.
 4. Prompts privately for the extension token and stores it with mode `600`.
-5. Links this repository into `~/.agents/skills/playwright-chromeos` by default.
+5. Links this repository into `~/.agents/skills/ai-browser-control-chromeos` by default.
 
 Use another agent skill directory when needed:
 
@@ -118,7 +118,7 @@ inspect the ChromeOS browser profile.
 
 When the connection page opens, ask:
 
-> Click **Copy Playwright connection address**, then press **Ctrl+L**, **Ctrl+V**,
+> Click **Copy browser connection address**, then press **Ctrl+L**, **Ctrl+V**,
 > and **Enter**. Tell me when the extension page says it is connected.
 
 After that, the agent should verify the named session instead of asking the user to
@@ -129,27 +129,27 @@ repeat setup.
 Check the shared session first:
 
 ```bash
-playwright-chromeos list
+ai-browser-control-chromeos list
 ```
 
 If it is not open, run this once from the Chromebook's normal Linux Terminal app:
 
 ```bash
-playwright-chromeos connect
+ai-browser-control-chromeos connect
 ```
 
 Starting it from the user's terminal keeps ownership independent of any one AI
 agent. This matters on agent hosts that clean up tool-launched child processes at
 the end of a turn. Keep the Terminal app running while browser automation is needed.
 
-Then use normal Playwright CLI commands:
+Then use the browser-control commands:
 
 ```bash
-playwright-chromeos goto https://example.com
-playwright-chromeos snapshot
-playwright-chromeos find "Sign in"
-playwright-chromeos click e12
-playwright-chromeos tab-list
+ai-browser-control-chromeos goto https://example.com
+ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos find "Sign in"
+ai-browser-control-chromeos click e12
+ai-browser-control-chromeos tab-list
 ```
 
 For a login flow, navigate to the service, let the user log in directly in Chrome,
@@ -158,19 +158,19 @@ authentication secrets out of the page.
 
 ## Session behavior
 
-`playwright-chromeos` uses the `chromeos` session by default. Override it when
+`ai-browser-control-chromeos` uses the `chromeos` session by default. Override it when
 separate long-lived browser sessions are useful:
 
 ```bash
-PLAYWRIGHT_CHROMEOS_SESSION=research playwright-chromeos connect
-PLAYWRIGHT_CHROMEOS_SESSION=research playwright-chromeos snapshot
+AI_BROWSER_CONTROL_CHROMEOS_SESSION=research ai-browser-control-chromeos connect
+AI_BROWSER_CONTROL_CHROMEOS_SESSION=research ai-browser-control-chromeos snapshot
 ```
 
 Useful lifecycle commands:
 
 ```bash
-playwright-chromeos list
-playwright-chromeos detach
+ai-browser-control-chromeos list
+ai-browser-control-chromeos detach
 playwright-cli kill-all
 ```
 

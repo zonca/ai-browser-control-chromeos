@@ -68,18 +68,18 @@ fi
 if ! command -v playwright-cli >/dev/null 2>&1; then
   if [[ "$install_cli" == true ]]; then
     printf '%s\n' 'Installing @playwright/cli globally...'
-    npm install -g "${PLAYWRIGHT_CLI_PACKAGE:-@playwright/cli@latest}"
+    npm install -g "${AI_BROWSER_CONTROL_CLI_PACKAGE:-@playwright/cli@latest}"
   else
     printf '%s\n' 'playwright-cli is missing and --skip-cli-install was requested.' >&2
     exit 1
   fi
 fi
 bin_dir="$HOME/.local/bin"
-config_dir="$HOME/.config/playwright-chromeos"
+config_dir="$HOME/.config/ai-browser-control-chromeos"
 token_file="$config_dir/extension-token"
 install -d -m 700 "$bin_dir" "$config_dir"
-install -m 700 "$root/bin/playwright-chromeos" "$bin_dir/playwright-chromeos"
-install -m 700 "$root/bin/playwright-chromeos-connect" "$bin_dir/playwright-chromeos-connect"
+install -m 700 "$root/bin/ai-browser-control-chromeos" "$bin_dir/ai-browser-control-chromeos"
+install -m 700 "$root/bin/ai-browser-control-chromeos-connect" "$bin_dir/ai-browser-control-chromeos-connect"
 
 token="${PLAYWRIGHT_MCP_EXTENSION_TOKEN:-}"
 if [[ -z "$token" && -r "$token_file" ]]; then
@@ -108,7 +108,7 @@ chmod 600 "$token_file"
 
 if [[ "$install_skill" == true ]]; then
   install -d "$skill_parent"
-  skill_target="$skill_parent/playwright-chromeos"
+  skill_target="$skill_parent/ai-browser-control-chromeos"
   if [[ -L "$skill_target" ]]; then
     current_target="$(readlink -f "$skill_target" || true)"
     if [[ "$current_target" != "$root" ]]; then
@@ -124,13 +124,13 @@ if [[ "$install_skill" == true ]]; then
 fi
 
 printf '\nSetup complete.\n'
-printf 'Playwright CLI: %s\n' "$(playwright-cli --version)"
-printf 'Runtime command: %s\n' "$bin_dir/playwright-chromeos"
+printf 'Browser engine CLI: %s\n' "$(playwright-cli --version)"
+printf 'Runtime command: %s\n' "$bin_dir/ai-browser-control-chromeos"
 printf 'Token file: %s (mode %s)\n' "$token_file" "$(stat -c '%a' "$token_file")"
 if [[ "$install_skill" == true ]]; then
-  printf 'Skill: %s\n' "$skill_parent/playwright-chromeos"
+  printf 'Skill: %s\n' "$skill_parent/ai-browser-control-chromeos"
 fi
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   printf '\nAdd %s to PATH or start a new terminal before connecting.\n' "$bin_dir"
 fi
-printf '\nConnect once from a normal Linux terminal with: playwright-chromeos connect\n'
+printf '\nConnect once from a normal Linux terminal with: ai-browser-control-chromeos connect\n'

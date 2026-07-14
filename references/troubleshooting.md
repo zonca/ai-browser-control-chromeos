@@ -3,7 +3,7 @@
 Read this reference only after the normal session-discovery and connection workflow
 in `SKILL.md` fails.
 
-## `playwright-chromeos: command not found`
+## `ai-browser-control-chromeos: command not found`
 
 Run `scripts/doctor.sh`. If the repository is present but the wrappers are missing,
 ask the user to run `scripts/setup.sh`. If `~/.local/bin` is not on `PATH`, start a
@@ -31,7 +31,7 @@ Run `scripts/setup.sh` and let the user enter the token at the hidden prompt. Th
 default token file is:
 
 ```text
-~/.config/playwright-chromeos/extension-token
+~/.config/ai-browser-control-chromeos/extension-token
 ```
 
 It should have permission mode `600`. Never display its contents.
@@ -39,7 +39,7 @@ It should have permission mode `600`. Never display its contents.
 ## `ERR_BLOCKED_BY_CLIENT`
 
 ChromeOS blocks a Crostini application or ordinary web page from directly opening a
-`chrome-extension://` address. Use `playwright-chromeos connect`. Its localhost page
+`chrome-extension://` address. Use `ai-browser-control-chromeos connect`. Its localhost page
 places the generated address on the clipboard after the user clicks Copy. The user
 must paste it into Chrome's address bar and press Enter.
 
@@ -55,10 +55,10 @@ The agent is probably launching a new Playwright MCP process or rerunning `attac
 for every action. Use the named CLI wrapper instead:
 
 ```bash
-playwright-chromeos list
-playwright-chromeos connect  # only when no session exists
-playwright-chromeos goto https://example.com
-playwright-chromeos snapshot
+ai-browser-control-chromeos list
+ai-browser-control-chromeos connect  # only when no session exists
+ai-browser-control-chromeos goto https://example.com
+ai-browser-control-chromeos snapshot
 ```
 
 The last two commands must be separate invocations that reuse the open session.
@@ -68,15 +68,15 @@ The last two commands must be separate invocations that reuse the open session.
 First refresh state:
 
 ```bash
-playwright-chromeos tab-list
-playwright-chromeos snapshot
+ai-browser-control-chromeos tab-list
+ai-browser-control-chromeos snapshot
 ```
 
 If the extension connection has actually closed, detach and reconnect:
 
 ```bash
-playwright-chromeos detach
-playwright-chromeos connect
+ai-browser-control-chromeos detach
+ai-browser-control-chromeos connect
 ```
 
 This requires another user handoff because it creates a new relay address.
@@ -99,20 +99,20 @@ children. Ask the user to start the session from the Chromebook's normal Linux
 Terminal app instead:
 
 ```bash
-playwright-chromeos connect
+ai-browser-control-chromeos connect
 ```
 
 After the handoff succeeds, keep the Terminal app running while browser automation
 is needed. Other agents can then discover the same named session with
-`playwright-chromeos list`.
+`ai-browser-control-chromeos list`.
 
 ## Different agents need different session names
 
 Set a stable session name per agent or task:
 
 ```bash
-PLAYWRIGHT_CHROMEOS_SESSION=codex playwright-chromeos connect
-PLAYWRIGHT_CHROMEOS_SESSION=codex playwright-chromeos snapshot
+AI_BROWSER_CONTROL_CHROMEOS_SESSION=codex ai-browser-control-chromeos connect
+AI_BROWSER_CONTROL_CHROMEOS_SESSION=codex ai-browser-control-chromeos snapshot
 ```
 
 Each new name needs its own initial extension handoff. Prefer the shared default
@@ -122,5 +122,5 @@ session when agents are not operating concurrently.
 
 The wrapper sets `PLAYWRIGHT_MCP_OUTPUT_DIR` to a temporary directory by default.
 If an existing daemon was started before that setting was installed, detach it and
-connect again. Override the directory with `PLAYWRIGHT_CHROMEOS_OUTPUT_DIR` when
+connect again. Override the directory with `AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR` when
 artifacts must be retained.

@@ -25,24 +25,24 @@ command -v garcon-url-handler >/dev/null 2>&1 && pass 'ChromeOS garcon-url-handl
 [[ -d /mnt/chromeos ]] && pass 'ChromeOS mount detected' || warn '/mnt/chromeos not detected'
 
 if command -v playwright-cli >/dev/null 2>&1; then
-  pass "Playwright CLI $(playwright-cli --version)"
+  pass "Browser engine CLI $(playwright-cli --version)"
 else
   fail 'playwright-cli is missing'
 fi
 
-if command -v playwright-chromeos >/dev/null 2>&1; then
-  pass "Runtime wrapper $(command -v playwright-chromeos)"
+if command -v ai-browser-control-chromeos >/dev/null 2>&1; then
+  pass "Runtime wrapper $(command -v ai-browser-control-chromeos)"
 else
-  fail 'playwright-chromeos wrapper is missing from PATH'
+  fail 'ai-browser-control-chromeos wrapper is missing from PATH'
 fi
 
-if command -v playwright-chromeos-connect >/dev/null 2>&1; then
-  pass "ChromeOS handoff helper $(command -v playwright-chromeos-connect)"
+if command -v ai-browser-control-chromeos-connect >/dev/null 2>&1; then
+  pass "ChromeOS handoff helper $(command -v ai-browser-control-chromeos-connect)"
 else
-  fail 'playwright-chromeos-connect helper is missing from PATH'
+  fail 'ai-browser-control-chromeos-connect helper is missing from PATH'
 fi
 
-token_file="${PLAYWRIGHT_CHROMEOS_TOKEN_FILE:-$HOME/.config/playwright-chromeos/extension-token}"
+token_file="${AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE:-$HOME/.config/ai-browser-control-chromeos/extension-token}"
 if [[ -s "$token_file" ]]; then
   mode="$(stat -c '%a' "$token_file" 2>/dev/null || printf unknown)"
   if [[ "$mode" == 600 ]]; then
@@ -54,9 +54,9 @@ else
   fail "Extension token file is missing: $token_file"
 fi
 
-skill_path="${AGENT_SKILLS_DIR:-$HOME/.agents/skills}/playwright-chromeos/SKILL.md"
+skill_path="${AGENT_SKILLS_DIR:-$HOME/.agents/skills}/ai-browser-control-chromeos/SKILL.md"
 [[ -r "$skill_path" ]] && pass "Agent skill installed at ${skill_path%/SKILL.md}" || warn "Agent skill not found at ${skill_path%/SKILL.md}"
 
-printf '\nManual check: confirm the official Playwright Extension is installed in ChromeOS Chrome.\n'
+printf '\nManual check: confirm the required browser-control extension is installed in ChromeOS Chrome.\n'
 printf 'Summary: %d failure(s), %d warning(s).\n' "$failures" "$warnings"
 ((failures == 0))

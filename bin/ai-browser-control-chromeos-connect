@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open a ChromeOS-safe handoff page for a Playwright extension relay URL."""
+"""Open a ChromeOS-safe handoff page for the browser-control relay URL."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm"
 
 def connection_url_from_argv() -> str:
     if len(sys.argv) < 2:
-        raise SystemExit("Playwright did not provide an extension connection URL")
+        raise SystemExit("The browser engine did not provide an extension connection URL")
     connection_url = sys.argv[-1]
     parsed = urlparse(connection_url)
     if (
@@ -52,8 +52,8 @@ button {{ font: inherit; padding: .75rem 1rem; cursor: pointer; }}
 code {{ overflow-wrap: anywhere; }}
 </style>
 <h1>Connect AI agent to Chrome</h1>
-<p>ChromeOS requires the Playwright extension address to be pasted directly into the address bar.</p>
-<button id="copy" type="button">Copy Playwright connection address</button>
+<p>ChromeOS requires the browser-control extension address to be pasted directly into the address bar.</p>
+<button id="copy" type="button">Copy browser connection address</button>
 <p>Then press <strong>Ctrl+L</strong>, <strong>Ctrl+V</strong>, and <strong>Enter</strong>.</p>
 <p id="status" role="status"></p>
 <noscript>JavaScript is required to copy the address: <code>{safe_url}</code></noscript>

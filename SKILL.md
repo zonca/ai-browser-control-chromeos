@@ -1,10 +1,10 @@
 ---
-name: playwright-chromeos
+name: ai-browser-control-chromeos
 description: Control the user's existing ChromeOS Chrome browser from an AI coding agent running in Chromebook Crostini, preserving live tabs, cookies, and user-driven logins through the official Playwright extension and a persistent named CLI session. Use this skill whenever a user asks an agent to browse live in their Chromebook browser, continue after the user logs in, replace repeated Playwright extension Connect tabs, or obtain behavior similar to `claude --chrome` from Codex or another terminal agent.
 compatibility: Chromebook Crostini with Bash, Node.js 18+, npm, Python 3, garcon-url-handler, and the official Playwright Chrome extension.
 ---
 
-# Playwright ChromeOS
+# AI Browser Control for ChromeOS
 
 Control the user's existing ChromeOS Chrome profile from a terminal-based AI agent.
 The workflow uses a named Playwright CLI session so separate shell calls and AI
@@ -14,7 +14,7 @@ agents can reuse one extension connection.
 
 The user installs the Chrome extension, enters its token through a hidden terminal
 prompt, completes interactive login, and approves sensitive actions. The agent
-diagnoses the environment, runs Playwright commands, observes page state, and
+diagnoses the environment, runs browser-control commands, observes page state, and
 continues after the user confirms the human step.
 
 This separation keeps credentials out of chat and avoids pretending that Crostini
@@ -32,8 +32,8 @@ only when connection or command reuse fails.
 
 ## Start every browser task with session discovery
 
-1. Check whether `playwright-chromeos` is available.
-2. Run `playwright-chromeos list`.
+1. Check whether `ai-browser-control-chromeos` is available.
+2. Run `ai-browser-control-chromeos list`.
 3. If the `chromeos` session is open, reuse it. Do not run `connect` again.
 4. If the command or prerequisites are missing, run `SKILL_ROOT/scripts/doctor.sh`
    and report only the missing items.
@@ -65,15 +65,15 @@ echo, log, summarize, or repeat the token.
 Ask the user to run this in the Chromebook's normal Linux Terminal app:
 
 ```bash
-playwright-chromeos connect
+ai-browser-control-chromeos connect
 ```
 
-The ChromeOS handoff page asks the user to click **Copy Playwright connection
+The ChromeOS handoff page asks the user to click **Copy browser connection
 address**. Ask them to click it, then press **Ctrl+L**, **Ctrl+V**, and **Enter** in
 Chrome. After the command reports success, verify the shared session:
 
 ```bash
-playwright-chromeos list
+ai-browser-control-chromeos list
 ```
 
 The `chromeos` session should be open. Starting it from the user's Terminal keeps
@@ -87,25 +87,25 @@ once per browser/daemon lifetime.
 Verify persistence with two separate invocations, for example:
 
 ```bash
-playwright-chromeos tab-list
-playwright-chromeos snapshot
+ai-browser-control-chromeos tab-list
+ai-browser-control-chromeos snapshot
 ```
 
 If both succeed without another Connect page, the session is ready.
 
 ## Operate the browser
 
-Use concise Playwright CLI commands and refs from the latest snapshot:
+Use concise browser-control commands and refs from the latest snapshot:
 
 ```bash
-playwright-chromeos goto https://example.com
-playwright-chromeos snapshot
-playwright-chromeos find "Account"
-playwright-chromeos click e12
-playwright-chromeos fill e19 "text"
-playwright-chromeos press Enter
-playwright-chromeos tab-list
-playwright-chromeos tab-select 1
+ai-browser-control-chromeos goto https://example.com
+ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos find "Account"
+ai-browser-control-chromeos click e12
+ai-browser-control-chromeos fill e19 "text"
+ai-browser-control-chromeos press Enter
+ai-browser-control-chromeos tab-list
+ai-browser-control-chromeos tab-select 1
 ```
 
 Prefer `find` or a shallow `snapshot --depth=N` before requesting a large snapshot.
@@ -134,10 +134,10 @@ publishing, account changes, or other consequential writes.
 
 When an action fails:
 
-1. Run `playwright-chromeos list`.
+1. Run `ai-browser-control-chromeos list`.
 2. If the session is open, retry with a new snapshot rather than reconnecting.
 3. If the session is closed, check `SKILL_ROOT/scripts/doctor.sh`.
-4. Only then ask the user to rerun `playwright-chromeos connect` in their Terminal
+4. Only then ask the user to rerun `ai-browser-control-chromeos connect` in their Terminal
    and perform the one-time handoff.
 
 For `ERR_BLOCKED_BY_CLIENT`, use the local handoff page; do not click or open its
@@ -150,7 +150,7 @@ Leave the named session open when the user expects more browser work. Detach onl
 when the user asks to end control or when security requires it:
 
 ```bash
-playwright-chromeos detach
+ai-browser-control-chromeos detach
 ```
 
 Report the page title and URL that demonstrate the requested outcome, without

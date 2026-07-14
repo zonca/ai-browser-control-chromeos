@@ -6,13 +6,13 @@ cache_dir="$(mktemp -d)"
 trap 'rm -rf "$cache_dir"' EXIT
 
 bash -n \
-  "$root/bin/playwright-chromeos" \
+  "$root/bin/ai-browser-control-chromeos" \
   "$root/scripts/setup.sh" \
   "$root/scripts/doctor.sh" \
   "$root/scripts/test.sh"
 
 PYTHONPYCACHEPREFIX="$cache_dir" python3 -m py_compile \
-  "$root/bin/playwright-chromeos-connect"
+  "$root/bin/ai-browser-control-chromeos-connect"
 python3 -m json.tool "$root/evals/evals.json" >/dev/null
 
 python3 - "$root" <<'PY'

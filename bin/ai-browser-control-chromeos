@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-token_file="${PLAYWRIGHT_CHROMEOS_TOKEN_FILE:-$HOME/.config/playwright-chromeos/extension-token}"
-session="${PLAYWRIGHT_CHROMEOS_SESSION:-chromeos}"
-browser="${PLAYWRIGHT_CHROMEOS_BROWSER:-chrome}"
-output_dir="${PLAYWRIGHT_CHROMEOS_OUTPUT_DIR:-/tmp/playwright-chromeos-${UID}}"
+token_file="${AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE:-$HOME/.config/ai-browser-control-chromeos/extension-token}"
+session="${AI_BROWSER_CONTROL_CHROMEOS_SESSION:-chromeos}"
+browser="${AI_BROWSER_CONTROL_CHROMEOS_BROWSER:-chrome}"
+output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-chromeos-${UID}}"
 
 if [[ ! -r "$token_file" ]]; then
-  printf 'Missing Playwright extension token: %s\nRun the skill setup script first.\n' "$token_file" >&2
+  printf 'Missing browser extension token: %s\nRun the skill setup script first.\n' "$token_file" >&2
   exit 1
 fi
 
-playwright_cli="${PLAYWRIGHT_CHROMEOS_CLI:-$(command -v playwright-cli || true)}"
+playwright_cli="${AI_BROWSER_CONTROL_CHROMEOS_CLI:-$(command -v playwright-cli || true)}"
 if [[ -z "$playwright_cli" || ! -x "$playwright_cli" ]]; then
   printf 'playwright-cli is not installed. Run the skill setup script first.\n' >&2
   exit 1
@@ -22,15 +22,15 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-connect_helper="${PLAYWRIGHT_CHROMEOS_CONNECT_HELPER:-$(command -v playwright-chromeos-connect || true)}"
+connect_helper="${AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER:-$(command -v ai-browser-control-chromeos-connect || true)}"
 if [[ -z "$connect_helper" || ! -x "$connect_helper" ]]; then
-  printf 'playwright-chromeos-connect is missing. Run the skill setup script first.\n' >&2
+  printf 'ai-browser-control-chromeos-connect is missing. Run the skill setup script first.\n' >&2
   exit 1
 fi
 
 token="$(<"$token_file")"
 if [[ -z "$token" || "$token" == *$'\n'* ]]; then
-  printf 'The Playwright extension token file is empty or invalid.\n' >&2
+  printf 'The browser extension token file is empty or invalid.\n' >&2
   exit 1
 fi
 
