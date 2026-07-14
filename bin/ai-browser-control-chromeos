@@ -5,6 +5,10 @@ token_file="${AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE:-$HOME/.config/ai-browser-c
 session="${AI_BROWSER_CONTROL_CHROMEOS_SESSION:-chromeos}"
 browser="${AI_BROWSER_CONTROL_CHROMEOS_BROWSER:-chrome}"
 output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-chromeos-${UID}}"
+state_dir="${AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR:-$HOME/.local/state/ai-browser-control-chromeos}"
+pid_file="$state_dir/connect-${session}.pid"
+log_file="$state_dir/connect-${session}.log"
+self="$(readlink -f "$0")"
 
 if [[ ! -r "$token_file" ]]; then
   printf 'Missing browser extension token: %s\nRun the skill setup script first.\n' "$token_file" >&2
@@ -34,20 +38,18 @@ if [[ -z "$token" || "$token" == *$'\n'* ]]; then
   exit 1
 fi
 
-if [[ "${1:-}" == "connect" ]]; then
-  shift
-  set -- attach "--extension=$browser" "$@"
-fi
-
-mkdir -p "$output_dir"
+umask 077
+mkdir -p "$output_dir" "$state_dir"
+chmod 700 "$state_dir"
 export PLAYWRIGHT_MCP_EXTENSION_TOKEN="$token"
 export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$connect_helper"
 export PLAYWRIGHT_MCP_OUTPUT_DIR="$output_dir"
 export NODE_OPTIONS="--dns-result-order=ipv4first${NODE_OPTIONS:+ $NODE_OPTIONS}"
 
-set +e
-"$playwright_cli" "-s=$session" "$@" 2>&1 |
-  PLAYWRIGHT_TOKEN_TO_REDACT="$token" python3 -u -c '
+run_cli() {
+  set +e
+  "$playwright_cli" "-s=$session" "$@" 2>&1 |
+    PLAYWRIGHT_TOKEN_TO_REDACT="$token" python3 -u -c '
 import os
 import sys
 import urllib.parse
@@ -57,6 +59,195 @@ encoded = urllib.parse.quote(token, safe="")
 for line in sys.stdin:
     sys.stdout.write(line.replace(token, "[REDACTED]").replace(encoded, "[REDACTED]"))
 '
-statuses=("${PIPESTATUS[@]}")
-set -e
-exit "${statuses[0]}"
+  statuses=("${PIPESTATUS[@]}")
+  set -e
+  return "${statuses[0]}"
+}
+
+session_is_open() {
+  local listing
+  if ! listing="$(run_cli list 2>/dev/null)"; then
+    return 1
+  fi
+  [[ "$listing" == *"- $session:"* && "$listing" == *"status: open"* ]]
+}
+
+supervisor_pid() {
+  [[ -r "$pid_file" ]] || return 1
+  local pid command_line
+  pid="$(<"$pid_file")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$command_line" == *"ai-browser-control-chromeos __connect-supervisor"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+remove_own_pid_file() {
+  [[ -r "$pid_file" ]] || return 0
+  [[ "$(<"$pid_file")" == "$$" ]] || return 0
+  rm -f "$pid_file"
+}
+
+start_background_connection() {
+  if session_is_open; then
+    printf 'Browser session %s is already connected.\n' "$session"
+    return 0
+  fi
+
+  local pid
+  if pid="$(supervisor_pid)"; then
+    printf 'Background connection is already running (pid %s).\n' "$pid"
+    printf 'Log: %s\n' "$log_file"
+    return 0
+  fi
+
+  rm -f "$pid_file"
+  : >"$log_file"
+  nohup "$self" __connect-supervisor >>"$log_file" 2>&1 </dev/null &
+  pid=$!
+  printf '%s\n' "$pid" >"$pid_file"
+  sleep 0.25
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pid_file"
+    printf 'Background connection failed to start.\n' >&2
+    tail -n 20 "$log_file" >&2 || true
+    return 1
+  fi
+
+  printf 'Background connection started (pid %s).\n' "$pid"
+  printf 'Log: %s\n' "$log_file"
+}
+
+run_supervisor() {
+  trap remove_own_pid_file EXIT
+  run_cli attach "--extension=$browser"
+  while session_is_open; do
+    sleep 15
+  done
+}
+
+show_status() {
+  if session_is_open; then
+    printf 'connected: session %s is open\n' "$session"
+    return 0
+  fi
+
+  local pid
+  if pid="$(supervisor_pid)"; then
+    printf 'connecting: background process %s is waiting for Chrome\n' "$pid"
+    return 2
+  fi
+
+  rm -f "$pid_file"
+  printf 'disconnected: no open browser session\n'
+  return 1
+}
+
+wait_for_connection() {
+  local timeout="${1:-120}"
+  [[ "$timeout" =~ ^[0-9]+$ ]] || {
+    printf 'wait timeout must be a non-negative integer\n' >&2
+    return 2
+  }
+
+  local started now pid
+  started="$(date +%s)"
+  while true; do
+    if session_is_open; then
+      printf 'connected: session %s is open\n' "$session"
+      return 0
+    fi
+    if ! pid="$(supervisor_pid)"; then
+      printf 'Background connection stopped before Chrome connected.\n' >&2
+      tail -n 20 "$log_file" >&2 || true
+      return 1
+    fi
+    now="$(date +%s)"
+    if ((now - started >= timeout)); then
+      printf 'Timed out after %s seconds while waiting for Chrome.\n' "$timeout" >&2
+      return 124
+    fi
+    sleep 1
+  done
+}
+
+show_logs() {
+  local lines="${1:-40}"
+  [[ "$lines" =~ ^[0-9]+$ ]] || {
+    printf 'log line count must be a non-negative integer\n' >&2
+    return 2
+  }
+  [[ -r "$log_file" ]] || {
+    printf 'No background connection log exists for session %s.\n' "$session"
+    return 1
+  }
+  tail -n "$lines" "$log_file"
+}
+
+disconnect_browser() {
+  local pid=""
+  pid="$(supervisor_pid || true)"
+  if session_is_open; then
+    run_cli detach || true
+  fi
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+  printf 'Browser-control session %s stopped.\n' "$session"
+}
+
+case "${1:-}" in
+  connect)
+    shift
+    [[ $# -eq 0 ]] || {
+      printf 'connect does not accept arguments\n' >&2
+      exit 2
+    }
+    start_background_connection
+    ;;
+  status)
+    shift
+    [[ $# -eq 0 ]] || {
+      printf 'status does not accept arguments\n' >&2
+      exit 2
+    }
+    show_status
+    ;;
+  wait)
+    shift
+    [[ $# -le 1 ]] || {
+      printf 'wait accepts at most one timeout argument\n' >&2
+      exit 2
+    }
+    wait_for_connection "$@"
+    ;;
+  logs)
+    shift
+    [[ $# -le 1 ]] || {
+      printf 'logs accepts at most one line-count argument\n' >&2
+      exit 2
+    }
+    show_logs "$@"
+    ;;
+  disconnect)
+    shift
+    [[ $# -eq 0 ]] || {
+      printf 'disconnect does not accept arguments\n' >&2
+      exit 2
+    }
+    disconnect_browser
+    ;;
+  __connect-supervisor)
+    run_supervisor
+    ;;
+  "")
+    printf 'Usage: ai-browser-control-chromeos {connect|status|wait|logs|disconnect|<browser-command>}\n' >&2
+    exit 2
+    ;;
+  *)
+    run_cli "$@"
+    ;;
+esac

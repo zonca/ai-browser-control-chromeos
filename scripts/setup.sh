@@ -131,6 +131,6 @@ if [[ "$install_skill" == true ]]; then
   printf 'Skill: %s\n' "$skill_parent/ai-browser-control-chromeos"
 fi
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
-  printf '\nAdd %s to PATH or start a new terminal before connecting.\n' "$bin_dir"
+  printf '\nAgent note: add %s to the agent shell PATH or invoke the runtime by absolute path.\n' "$bin_dir"
 fi
-printf '\nConnect once from a normal Linux terminal with: ai-browser-control-chromeos connect\n'
+printf '\nAgent next step: run ai-browser-control-chromeos status, then connect if disconnected.\n'

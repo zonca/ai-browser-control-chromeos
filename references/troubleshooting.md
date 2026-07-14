@@ -6,8 +6,8 @@ in `SKILL.md` fails.
 ## `ai-browser-control-chromeos: command not found`
 
 Run `scripts/doctor.sh`. If the repository is present but the wrappers are missing,
-ask the user to run `scripts/setup.sh`. If `~/.local/bin` is not on `PATH`, start a
-new terminal or add it to the shell's PATH configuration.
+run `scripts/setup.sh` yourself. If `~/.local/bin` is not on `PATH`, invoke the
+installed command by absolute path and repair the agent shell's PATH.
 
 ## Node.js is missing or too old
 
@@ -39,9 +39,9 @@ It should have permission mode `600`. Never display its contents.
 ## `ERR_BLOCKED_BY_CLIENT`
 
 ChromeOS blocks a Crostini application or ordinary web page from directly opening a
-`chrome-extension://` address. Use `ai-browser-control-chromeos connect`. Its localhost page
-places the generated address on the clipboard after the user clicks Copy. The user
-must paste it into Chrome's address bar and press Enter.
+`chrome-extension://` address. The agent runs `ai-browser-control-chromeos connect`.
+Its localhost page places the generated address on the clipboard after the user
+clicks Copy. Ask the user only to paste it into Chrome's address bar and press Enter.
 
 Do not turn the address into a clickable HTTP link; Chrome blocks that path too.
 
@@ -55,8 +55,8 @@ The agent is probably launching a new Playwright MCP process or rerunning `attac
 for every action. Use the named CLI wrapper instead:
 
 ```bash
-ai-browser-control-chromeos list
-ai-browser-control-chromeos connect  # only when no session exists
+ai-browser-control-chromeos status
+ai-browser-control-chromeos connect  # agent runs this only when disconnected
 ai-browser-control-chromeos goto https://example.com
 ai-browser-control-chromeos snapshot
 ```
@@ -72,16 +72,39 @@ ai-browser-control-chromeos tab-list
 ai-browser-control-chromeos snapshot
 ```
 
-If the extension connection has actually closed, detach and reconnect:
+If the extension connection has actually closed, inspect and reconnect in the
+background:
 
 ```bash
-ai-browser-control-chromeos detach
+ai-browser-control-chromeos status
+ai-browser-control-chromeos logs 40
+ai-browser-control-chromeos disconnect
 ai-browser-control-chromeos connect
 ```
 
 This requires another user handoff because it creates a new relay address.
 
-## Kill only Playwright CLI daemons
+## Background process remains in `connecting`
+
+Inspect the redacted log and keep the existing supervisor while the user completes
+the Chrome handoff:
+
+```bash
+ai-browser-control-chromeos status
+ai-browser-control-chromeos logs 40
+```
+
+If the relay address is stale, restart it yourself:
+
+```bash
+ai-browser-control-chromeos disconnect
+ai-browser-control-chromeos connect
+```
+
+State is stored under `~/.local/state/ai-browser-control-chromeos/`. `connect` is
+idempotent and will not create a duplicate while the recorded supervisor is alive.
+
+## Kill only browser-engine daemons
 
 Use this only when a stale daemon cannot detach cleanly:
 
@@ -94,17 +117,16 @@ external ChromeOS browser, but all extension connections must be re-established.
 
 ## The daemon disappears between agent turns
 
-Some agent hosts clean up every process started by a tool call, including detached
-children. Ask the user to start the session from the Chromebook's normal Linux
-Terminal app instead:
+Some agent hosts clean up background children between turns. The next agent should
+detect that state and restart the background connection itself:
 
 ```bash
+ai-browser-control-chromeos status
 ai-browser-control-chromeos connect
 ```
 
-After the handoff succeeds, keep the Terminal app running while browser automation
-is needed. Other agents can then discover the same named session with
-`ai-browser-control-chromeos list`.
+Ask the user only to repeat the Chrome address-bar handoff if a new page opens. Never
+delegate process startup or monitoring to the user.
 
 ## Different agents need different session names
 

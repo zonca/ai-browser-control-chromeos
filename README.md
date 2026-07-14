@@ -43,10 +43,11 @@ AI agent -> ai-browser-control-chromeos -> named browser-control daemon
                          existing ChromeOS Chrome profile
 ```
 
-The first `connect` command opens a small local page. The user clicks Copy, pastes
-the generated extension address into Chrome's address bar, and presses Enter. Later
-commands reuse the named daemon without another Connect tab. A new handoff is needed
-after Chrome, the daemon, or the Chromebook is restarted.
+The agent runs `connect`, which launches a supervised connection process in the
+background and returns immediately. A small local page opens in Chrome. The user
+clicks Copy, pastes the generated extension address into Chrome's address bar, and
+presses Enter. The agent polls connection status and continues automatically. Later
+commands reuse the named daemon without another Connect tab.
 
 ## Requirements
 
@@ -59,7 +60,10 @@ after Chrome, the daemon, or the Chromebook is restarted.
 The setup script installs `@playwright/cli` globally. It does not use `npx` during
 normal operation.
 
-## Installation
+## Installation (run by the agent)
+
+The AI agent should execute these commands after the user authorizes installation.
+They are shown here so the process remains auditable:
 
 ```bash
 git clone https://github.com/zonca/ai-browser-control-chromeos.git
@@ -87,8 +91,9 @@ the browser command should be installed.
 ### The extension token
 
 Install the Playwright extension, open its connection screen, and copy the token
-shown in the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=...` instruction. Run `setup.sh` in
-your own terminal and paste the token into its hidden prompt.
+shown in the `PLAYWRIGHT_MCP_EXTENSION_TOKEN=...` instruction. The agent runs
+`setup.sh`; enter the token only through its hidden prompt or a trusted secret
+environment.
 
 Do not paste the token into an AI conversation, issue, log, or repository. For
 non-interactive setup, provide it through a trusted secret environment:
@@ -99,17 +104,17 @@ PLAYWRIGHT_MCP_EXTENSION_TOKEN="..." ./scripts/setup.sh
 
 ## How an agent should ask for prerequisites
 
-An agent can inspect the environment with `scripts/doctor.sh`, but installing the
-Chrome extension and entering its token require the user. Keep the request precise
-and separate the human actions from the agent's work.
+The agent owns all terminal work: diagnostics, installation, setup, background
+processes, status polling, browser commands, logs, and cleanup. The user only handles
+actions that cannot safely be automated: installing the Chrome extension, entering
+its token privately, interactive login/MFA, and approving consequential actions.
 
 Recommended message:
 
-> Please install the official Playwright Extension in ChromeOS Chrome. Then open
-> the extension and copy the token it shows. In the Linux terminal, run
-> `./scripts/setup.sh` and paste the token into the hidden prompt. Do not paste the
-> token into this chat. Tell me when setup finishes, and I will make the one-time
-> browser connection and continue.
+> Please install the official Playwright Extension in ChromeOS Chrome and open it
+> to copy the token it shows. I will run the setup and connection processes. Enter
+> the token only through the secure prompt I open; do not paste it into this chat.
+> Tell me when the extension is installed.
 
 If only Node.js or npm is missing, tell the user exactly what the diagnostic found
 and ask them to install Node.js 18+ in Crostini. Do not claim the extension is
@@ -121,26 +126,38 @@ When the connection page opens, ask:
 > Click **Copy browser connection address**, then press **Ctrl+L**, **Ctrl+V**,
 > and **Enter**. Tell me when the extension page says it is connected.
 
-After that, the agent should verify the named session instead of asking the user to
-repeat setup.
+After that, the agent polls the background connection and continues. It must not ask
+the user to run a terminal command.
 
 ## Use
 
-Check the shared session first:
+The agent checks the shared session first:
 
 ```bash
-ai-browser-control-chromeos list
+ai-browser-control-chromeos status
 ```
 
-If it is not open, run this once from the Chromebook's normal Linux Terminal app:
+If disconnected, the agent starts the connection in the background:
 
 ```bash
 ai-browser-control-chromeos connect
 ```
 
-Starting it from the user's terminal keeps ownership independent of any one AI
-agent. This matters on agent hosts that clean up tool-launched child processes at
-the end of a turn. Keep the Terminal app running while browser automation is needed.
+This returns immediately with a supervisor PID and redacted log path. The agent asks
+the user to complete the Chrome address-bar handoff, then checks or waits:
+
+```bash
+ai-browser-control-chromeos status
+ai-browser-control-chromeos wait 120
+ai-browser-control-chromeos logs 40
+```
+
+The user never needs to start, monitor, or stop a terminal process.
+
+`status` uses automation-friendly exit codes: `0` when connected, `2` while the
+background process is connecting, and `1` when disconnected. `wait` returns `124`
+on timeout. Connection logs are token-redacted and stored under
+`~/.local/state/ai-browser-control-chromeos/`.
 
 Then use the browser-control commands:
 
@@ -169,14 +186,16 @@ AI_BROWSER_CONTROL_CHROMEOS_SESSION=research ai-browser-control-chromeos snapsho
 Useful lifecycle commands:
 
 ```bash
-ai-browser-control-chromeos list
-ai-browser-control-chromeos detach
-playwright-cli kill-all
+ai-browser-control-chromeos connect
+ai-browser-control-chromeos status
+ai-browser-control-chromeos wait 120
+ai-browser-control-chromeos logs 40
+ai-browser-control-chromeos disconnect
 ```
 
-Do not call `connect` before every action. First run `list` and reuse an open
-session. A new attach replaces the named session and creates another extension
-handoff.
+Do not call `connect` before every action. First run `status` and reuse an open or
+currently connecting session. `connect` is idempotent: it reports the existing
+connection or supervisor rather than starting a duplicate.
 
 ## Diagnostics
 
