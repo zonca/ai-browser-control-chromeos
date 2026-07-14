@@ -6,6 +6,20 @@ compatibility: Chromebook Crostini with Bash, Node.js 18+, npm, Python 3, garcon
 
 # AI Browser Control for ChromeOS
 
+## Quick Start
+
+```bash
+ai-browser-control-chromeos status   # check if connected
+ai-browser-control-chromeos connect   # start background supervisor
+# -> User clicks "Copy browser connection address" in Chrome, then Ctrl+L, Ctrl+V, Enter
+ai-browser-control-chromeos status    # verify: "connected: session chromeos is open"
+ai-browser-control-chromeos goto https://example.com
+ai-browser-control-chromeos snapshot
+```
+
+If connection fails: `ai-browser-control-chromeos reconnect` (kills old supervisor, starts fresh).
+For hands-off recovery: `ai-browser-control-chromeos connect --persistent` (auto-restarts on disconnect).
+
 Control the user's existing ChromeOS Chrome profile from a terminal-based AI agent.
 The workflow uses a named Playwright CLI session so separate shell calls and AI
 agents can reuse one extension connection.
@@ -69,19 +83,23 @@ Start the connection yourself:
 ai-browser-control-chromeos connect
 ```
 
-`connect` returns immediately after launching a background supervisor. The ChromeOS
-handoff page asks the user to click **Copy browser connection
+`connect` returns immediately after launching a background supervisor (with a 2-second
+health check). The ChromeOS handoff page asks the user to click **Copy browser connection
 address**. Ask them to click it, then press **Ctrl+L**, **Ctrl+V**, and **Enter** in
 Chrome. Do not ask them to use a terminal. Poll while they perform the UI step:
 
 ```bash
 ai-browser-control-chromeos status
-ai-browser-control-chromeos wait 120
+ai-browser-control-chromeos wait 180
 ```
 
 Use `wait` after telling the user what to click, or poll `status` periodically when
 the agent runtime should remain responsive. If connection fails, inspect the
 redacted log with `ai-browser-control-chromeos logs 40`.
+
+**Recovery commands:**
+- `ai-browser-control-chromeos reconnect` -- kill stale supervisor and start fresh (triggers new handoff)
+- `ai-browser-control-chromeos connect --persistent` -- auto-restart supervisor if session drops
 
 The token bypasses the extension's approval dialog; it cannot make Crostini directly
 open a `chrome-extension://` URL. The copy-and-paste handoff is therefore expected
@@ -115,6 +133,18 @@ Prefer `find` or a shallow `snapshot --depth=N` before requesting a large snapsh
 After navigation or a meaningful DOM change, refresh the snapshot because refs can
 become stale.
 
+### Summarize feed posts
+
+For social media feeds (LinkedIn, etc.), extract a readable post summary instead of
+parsing the full snapshot:
+
+```bash
+ai-browser-control-chromeos eval "$(cat SKILL_ROOT/scripts/summarizeFeed.js)"
+```
+
+This returns a JSON array of `{author, time, text, reactions, comments, reposts}`
+for up to 20 posts on the current page.
+
 ## Hand interactive login to the user
 
 1. Navigate to the login page.
@@ -139,8 +169,9 @@ When an action fails:
 
 1. Run `ai-browser-control-chromeos status`.
 2. If the session is open, retry with a new snapshot rather than reconnecting.
-3. If the session is closed, check `SKILL_ROOT/scripts/doctor.sh`.
-4. If disconnected, run `ai-browser-control-chromeos connect` yourself and ask the
+3. If the session is closed, try `ai-browser-control-chromeos reconnect` (kills stale supervisor, starts fresh).
+4. If reconnect fails, check `SKILL_ROOT/scripts/doctor.sh`.
+5. If disconnected, run `ai-browser-control-chromeos connect` yourself and ask the
    user only for the Chrome UI handoff.
 
 For `ERR_BLOCKED_BY_CLIENT`, use the local handoff page; do not click or open its
