@@ -131,7 +131,7 @@ the user to complete the Chrome address-bar handoff, then checks or waits:
 
 ```bash
 ai-browser-control-chromeos status
-ai-browser-control-chromeos wait 120
+ai-browser-control-chromeos wait 180
 ai-browser-control-chromeos logs 40
 ```
 
@@ -171,7 +171,7 @@ Useful lifecycle commands:
 ```bash
 ai-browser-control-chromeos connect
 ai-browser-control-chromeos status
-ai-browser-control-chromeos wait 120
+ai-browser-control-chromeos wait 180
 ai-browser-control-chromeos logs 40
 ai-browser-control-chromeos disconnect
 ```

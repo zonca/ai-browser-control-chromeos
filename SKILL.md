@@ -18,7 +18,8 @@ ai-browser-control-chromeos snapshot
 ```
 
 If connection fails: `ai-browser-control-chromeos reconnect` (kills old supervisor, starts fresh).
-For hands-off recovery: `ai-browser-control-chromeos connect --persistent` (auto-restarts on disconnect).
+For continuous supervision: `ai-browser-control-chromeos connect --persistent`
+restarts the handoff after a disconnect; the user still completes any Chrome UI step.
 
 Control the user's existing ChromeOS Chrome profile from a terminal-based AI agent.
 The workflow uses a named Playwright CLI session so separate shell calls and AI
@@ -99,7 +100,7 @@ redacted log with `ai-browser-control-chromeos logs 40`.
 
 **Recovery commands:**
 - `ai-browser-control-chromeos reconnect` -- kill stale supervisor and start fresh (triggers new handoff)
-- `ai-browser-control-chromeos connect --persistent` -- auto-restart supervisor if session drops
+- `ai-browser-control-chromeos connect --persistent` -- keep restarting the handoff after session drops
 
 The token bypasses the extension's approval dialog; it cannot make Crostini directly
 open a `chrome-extension://` URL. The copy-and-paste handoff is therefore expected

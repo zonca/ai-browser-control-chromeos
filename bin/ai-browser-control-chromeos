@@ -6,6 +6,8 @@ session="${AI_BROWSER_CONTROL_CHROMEOS_SESSION:-chromeos}"
 browser="${AI_BROWSER_CONTROL_CHROMEOS_BROWSER:-chrome}"
 output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-chromeos-${UID}}"
 state_dir="${AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR:-$HOME/.local/state/ai-browser-control-chromeos}"
+poll_interval="${AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL:-15}"
+reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
 pid_file="$state_dir/connect-${session}.pid"
 log_file="$state_dir/connect-${session}.log"
 self="$(readlink -f "$0")"
@@ -92,10 +94,14 @@ remove_own_pid_file() {
 
 start_background_connection() {
   local persistent=false
+  local -a supervisor_args
   while (($#)); do
     case "$1" in
       --persistent) persistent=true; shift ;;
-      *) shift ;;
+      *)
+        printf 'Unsupported connect argument: %s\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
 
@@ -113,7 +119,11 @@ start_background_connection() {
 
   rm -f "$pid_file"
   : >"$log_file"
-  nohup "$self" __connect-supervisor --persistent >>"$log_file" 2>&1 </dev/null &
+  supervisor_args=(__connect-supervisor)
+  if [[ "$persistent" == true ]]; then
+    supervisor_args+=(--persistent)
+  fi
+  nohup "$self" "${supervisor_args[@]}" >>"$log_file" 2>&1 </dev/null &
   pid=$!
   printf '%s\n' "$pid" >"$pid_file"
 
@@ -126,14 +136,6 @@ start_background_connection() {
     return 1
   fi
 
-  # If --persistent was requested, also verify the handoff page was reached
-  if [[ "$persistent" == true ]]; then
-    if session_is_open; then
-      printf 'Browser session %s is already connected.\n' "$session"
-      return 0
-    fi
-  fi
-
   printf 'Background connection started (pid %s).\n' "$pid"
   printf 'Log: %s\n' "$log_file"
 }
@@ -143,27 +145,27 @@ run_supervisor() {
   while (($#)); do
     case "$1" in
       --persistent) persistent_mode=true; shift ;;
-      *) shift ;;
+      *)
+        printf 'Unsupported supervisor argument: %s\n' "$1" >&2
+        return 2
+        ;;
     esac
   done
 
   trap remove_own_pid_file EXIT
-  run_cli attach "--extension=$browser"
-  while session_is_open; do
-    sleep 15
-  done
-
-  # In persistent mode, auto-restart if the session closes unexpectedly
-  if [[ "$persistent_mode" == true ]]; then
-    printf 'Session closed; restarting in 3 seconds...\n' >>"$log_file" 2>&1
-    sleep 3
-    if ! session_is_open; then
-      run_cli attach "--extension=$browser"
+  while true; do
+    if run_cli attach "--extension=$browser"; then
       while session_is_open; do
-        sleep 15
+        sleep "$poll_interval"
       done
+    elif [[ "$persistent_mode" != true ]]; then
+      return 1
     fi
-  fi
+
+    [[ "$persistent_mode" == true ]] || return 0
+    printf 'Session closed; restarting in %s seconds...\n' "$reconnect_delay"
+    sleep "$reconnect_delay"
+  done
 }
 
 show_status() {
@@ -285,7 +287,8 @@ case "${1:-}" in
     start_background_connection
     ;;
   __connect-supervisor)
-    run_supervisor
+    shift
+    run_supervisor "$@"
     ;;
   "")
     printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|status|wait|logs|disconnect|reconnect|<browser-command>}\n' >&2

@@ -36,5 +36,5 @@
     return true;
   });
 
-  return JSON.stringify(unique.slice(0, 20), null, 2);
+  return unique.slice(0, 20);
 })();
