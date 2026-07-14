@@ -9,27 +9,10 @@ make the workflow practical.
 
 ## Motivation
 
-`claude --chrome` works well on a Chromebook because Claude Code ships a dedicated
-Chrome extension/native-host integration. Codex CLI does not currently provide an
-equivalent ChromeOS browser bridge. A normal Chrome DevTools MCP process running in
-Crostini sees Linux applications; it cannot simply take over the already-running
-ChromeOS browser and its signed-in profile.
-
-The official Playwright extension can connect Playwright to an existing Chrome
-window, but a short-lived MCP client may request a new extension connection every
-time. On ChromeOS, launching the generated `chrome-extension://.../connect.html`
-address from Crostini is also blocked with `ERR_BLOCKED_BY_CLIENT`.
-
-This skill combines:
-
-- Microsoft's official Playwright CLI and Playwright Chrome extension.
-- A named Playwright CLI session that separate AI agents can discover and reuse.
-- A localhost handoff page for ChromeOS's blocked extension URL.
-- A private extension-token file and output redaction.
-
-The result is one user-assisted connection per browser/daemon lifetime, not one
-connection per browser action. Microsoft also recommends CLI + skills for coding
-agents because it is more token-efficient than loading the full MCP tool schema.
+Reproduce the `claude --chrome` experience on ChromeOS for any AI coding agent: the
+human connects their normal Chrome browser and handles login or MFA, then the agent
+continues in the same authenticated browser. This repository packages that human/AI
+handoff as a reusable skill and persistent local bridge.
 
 ## How it works
 
