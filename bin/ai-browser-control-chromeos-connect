@@ -6,14 +6,17 @@ from __future__ import annotations
 import html
 import http.server
 import json
+import os
 import shutil
 import socketserver
 import subprocess
 import sys
+import threading
 from urllib.parse import urlparse
 
 
 EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm"
+DEFAULT_HANDOFF_TIMEOUT_SECONDS = 180
 
 
 def connection_url_from_argv() -> str:
@@ -38,33 +41,76 @@ def opener() -> str:
     raise SystemExit("Neither garcon-url-handler nor xdg-open is available")
 
 
-def main() -> None:
-    connection_url = connection_url_from_argv()
+def handoff_timeout_seconds() -> int:
+    raw_timeout = os.environ.get(
+        "AI_BROWSER_CONTROL_CHROMEOS_HANDOFF_TIMEOUT",
+        str(DEFAULT_HANDOFF_TIMEOUT_SECONDS),
+    )
+    try:
+        timeout = int(raw_timeout)
+    except ValueError as error:
+        raise SystemExit("The handoff timeout must be a positive integer") from error
+    if timeout <= 0:
+        raise SystemExit("The handoff timeout must be a positive integer")
+    return timeout
+
+
+def build_page(connection_url: str, timeout_seconds: int) -> bytes:
     safe_url = html.escape(connection_url, quote=True)
-    page = f"""<!doctype html>
+    return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect AI agent to Chrome</title>
 <style>
 body {{ font: 16px system-ui, sans-serif; max-width: 44rem; margin: 4rem auto; padding: 0 1rem; }}
-button {{ font: inherit; padding: .75rem 1rem; cursor: pointer; }}
+button {{ font: inherit; padding: .75rem 1rem; cursor: pointer; margin-right: .5rem; }}
+button:disabled {{ opacity: .5; cursor: default; }}
 code {{ overflow-wrap: anywhere; }}
+#countdown {{ font-weight: bold; color: #666; }}
+#status {{ margin-top: 1rem; }}
 </style>
 <h1>Connect AI agent to Chrome</h1>
 <p>ChromeOS requires the browser-control extension address to be pasted directly into the address bar.</p>
 <button id="copy" type="button">Copy browser connection address</button>
 <p>Then press <strong>Ctrl+L</strong>, <strong>Ctrl+V</strong>, and <strong>Enter</strong>.</p>
 <p id="status" role="status"></p>
+<p>Session expires in <span id="countdown">{timeout_seconds}</span>s</p>
 <noscript>JavaScript is required to copy the address: <code>{safe_url}</code></noscript>
 <script>
 const connectionUrl = {json.dumps(connection_url)};
-document.querySelector('#copy').addEventListener('click', async () => {{
-  await navigator.clipboard.writeText(connectionUrl);
-  document.querySelector('#status').textContent = 'Copied. Press Ctrl+L, Ctrl+V, and Enter.';
+const timeout = {timeout_seconds};
+let secondsLeft = timeout;
+const countdownEl = document.querySelector('#countdown');
+const statusEl = document.querySelector('#status');
+const copyBtn = document.querySelector('#copy');
+
+const timer = setInterval(() => {{
+  secondsLeft--;
+  countdownEl.textContent = secondsLeft;
+  if (secondsLeft <= 0) {{
+    clearInterval(timer);
+    copyBtn.disabled = true;
+    statusEl.textContent = 'Session expired. The AI agent will create a new connection page.';
+  }}
+}}, 1000);
+
+copyBtn.addEventListener('click', async () => {{
+  try {{
+    await navigator.clipboard.writeText(connectionUrl);
+    statusEl.textContent = 'Copied. Press Ctrl+L, Ctrl+V, and Enter in the address bar.';
+  }} catch (e) {{
+    statusEl.textContent = 'Copy failed. The raw address is: ' + connectionUrl;
+  }}
 }});
 </script>
 </html>""".encode("utf-8")
+
+
+def main() -> None:
+    connection_url = connection_url_from_argv()
+    timeout_seconds = handoff_timeout_seconds()
+    page = build_page(connection_url, timeout_seconds)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
@@ -79,14 +125,20 @@ document.querySelector('#copy').addEventListener('click', async () => {{
             del format, args
 
     with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
-        server.timeout = 120
         port = server.server_address[1]
-        subprocess.run(
-            [opener(), f"http://localhost:{port}/"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+
+        def open_browser():
+            subprocess.run(
+                [opener(), f"http://127.0.0.1:{port}/"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        # Open browser in a thread so we don't block the server
+        threading.Thread(target=open_browser, daemon=True).start()
+
+        server.timeout = timeout_seconds
         server.handle_request()
 
 

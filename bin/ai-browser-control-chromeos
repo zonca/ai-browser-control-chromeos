@@ -6,6 +6,8 @@ session="${AI_BROWSER_CONTROL_CHROMEOS_SESSION:-chromeos}"
 browser="${AI_BROWSER_CONTROL_CHROMEOS_BROWSER:-chrome}"
 output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-chromeos-${UID}}"
 state_dir="${AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR:-$HOME/.local/state/ai-browser-control-chromeos}"
+poll_interval="${AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL:-15}"
+reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
 pid_file="$state_dir/connect-${session}.pid"
 log_file="$state_dir/connect-${session}.log"
 self="$(readlink -f "$0")"
@@ -91,6 +93,18 @@ remove_own_pid_file() {
 }
 
 start_background_connection() {
+  local persistent=false
+  local -a supervisor_args
+  while (($#)); do
+    case "$1" in
+      --persistent) persistent=true; shift ;;
+      *)
+        printf 'Unsupported connect argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
   if session_is_open; then
     printf 'Browser session %s is already connected.\n' "$session"
     return 0
@@ -105,13 +119,19 @@ start_background_connection() {
 
   rm -f "$pid_file"
   : >"$log_file"
-  nohup "$self" __connect-supervisor >>"$log_file" 2>&1 </dev/null &
+  supervisor_args=(__connect-supervisor)
+  if [[ "$persistent" == true ]]; then
+    supervisor_args+=(--persistent)
+  fi
+  nohup "$self" "${supervisor_args[@]}" >>"$log_file" 2>&1 </dev/null &
   pid=$!
   printf '%s\n' "$pid" >"$pid_file"
-  sleep 0.25
+
+  # Delayed health check: wait 2 seconds and verify the supervisor is still alive
+  sleep 2
   if ! kill -0 "$pid" 2>/dev/null; then
     rm -f "$pid_file"
-    printf 'Background connection failed to start.\n' >&2
+    printf 'Background connection failed to start (process exited after spawn).\n' >&2
     tail -n 20 "$log_file" >&2 || true
     return 1
   fi
@@ -121,10 +141,30 @@ start_background_connection() {
 }
 
 run_supervisor() {
+  local persistent_mode=false
+  while (($#)); do
+    case "$1" in
+      --persistent) persistent_mode=true; shift ;;
+      *)
+        printf 'Unsupported supervisor argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
   trap remove_own_pid_file EXIT
-  run_cli attach "--extension=$browser"
-  while session_is_open; do
-    sleep 15
+  while true; do
+    if run_cli attach "--extension=$browser"; then
+      while session_is_open; do
+        sleep "$poll_interval"
+      done
+    elif [[ "$persistent_mode" != true ]]; then
+      return 1
+    fi
+
+    [[ "$persistent_mode" == true ]] || return 0
+    printf 'Session closed; restarting in %s seconds...\n' "$reconnect_delay"
+    sleep "$reconnect_delay"
   done
 }
 
@@ -146,7 +186,7 @@ show_status() {
 }
 
 wait_for_connection() {
-  local timeout="${1:-120}"
+  local timeout="${1:-180}"
   [[ "$timeout" =~ ^[0-9]+$ ]] || {
     printf 'wait timeout must be a non-negative integer\n' >&2
     return 2
@@ -202,11 +242,7 @@ disconnect_browser() {
 case "${1:-}" in
   connect)
     shift
-    [[ $# -eq 0 ]] || {
-      printf 'connect does not accept arguments\n' >&2
-      exit 2
-    }
-    start_background_connection
+    start_background_connection "$@"
     ;;
   status)
     shift
@@ -240,11 +276,22 @@ case "${1:-}" in
     }
     disconnect_browser
     ;;
+  reconnect)
+    shift
+    [[ $# -eq 0 ]] || {
+      printf 'reconnect does not accept arguments\n' >&2
+      exit 2
+    }
+    disconnect_browser
+    sleep 1
+    start_background_connection
+    ;;
   __connect-supervisor)
-    run_supervisor
+    shift
+    run_supervisor "$@"
     ;;
   "")
-    printf 'Usage: ai-browser-control-chromeos {connect|status|wait|logs|disconnect|<browser-command>}\n' >&2
+    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|status|wait|logs|disconnect|reconnect|<browser-command>}\n' >&2
     exit 2
     ;;
   *)
