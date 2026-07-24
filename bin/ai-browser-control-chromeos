@@ -82,7 +82,10 @@ supervisor_pid() {
   kill -0 "$pid" 2>/dev/null || return 1
   [[ -r "/proc/$pid/cmdline" ]] || return 1
   command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
-  [[ "$command_line" == *"ai-browser-control-chromeos __connect-supervisor"* ]] || return 1
+  if [[ "$command_line" != *"ai-browser-control-chromeos __connect-supervisor"* &&
+        "$command_line" != *"ai-browser-control-chromeos connect-foreground"* ]]; then
+    return 1
+  fi
   printf '%s\n' "$pid"
 }
 
@@ -140,6 +143,40 @@ start_background_connection() {
   printf 'Log: %s\n' "$log_file"
 }
 
+start_foreground_connection() {
+  local persistent=false
+  while (($#)); do
+    case "$1" in
+      --persistent) persistent=true; shift ;;
+      *)
+        printf 'Unsupported connect-foreground argument: %s\n' "$1" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if session_is_open; then
+    printf 'Browser session %s is already connected.\n' "$session"
+    return 0
+  fi
+
+  local pid
+  if pid="$(supervisor_pid)"; then
+    printf 'Connection supervisor is already running (pid %s).\n' "$pid"
+    return 0
+  fi
+
+  rm -f "$pid_file"
+  : >"$log_file"
+  printf '%s\n' "$$" >"$pid_file"
+  printf 'Foreground connection supervisor started (pid %s).\n' "$$"
+  if [[ "$persistent" == true ]]; then
+    run_supervisor --persistent 2>&1 | tee -a "$log_file"
+  else
+    run_supervisor 2>&1 | tee -a "$log_file"
+  fi
+}
+
 run_supervisor() {
   local persistent_mode=false
   while (($#)); do
@@ -176,7 +213,7 @@ show_status() {
 
   local pid
   if pid="$(supervisor_pid)"; then
-    printf 'connecting: background process %s is waiting for Chrome\n' "$pid"
+    printf 'connecting: supervisor process %s is waiting for Chrome\n' "$pid"
     return 2
   fi
 
@@ -200,7 +237,7 @@ wait_for_connection() {
       return 0
     fi
     if ! pid="$(supervisor_pid)"; then
-      printf 'Background connection stopped before Chrome connected.\n' >&2
+      printf 'Connection supervisor stopped before Chrome connected.\n' >&2
       tail -n 20 "$log_file" >&2 || true
       return 1
     fi
@@ -243,6 +280,10 @@ case "${1:-}" in
   connect)
     shift
     start_background_connection "$@"
+    ;;
+  connect-foreground)
+    shift
+    start_foreground_connection "$@"
     ;;
   status)
     shift
@@ -291,7 +332,7 @@ case "${1:-}" in
     run_supervisor "$@"
     ;;
   "")
-    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|status|wait|logs|disconnect|reconnect|<browser-command>}\n' >&2
+    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|connect-foreground [--persistent]|status|wait|logs|disconnect|reconnect|<browser-command>}\n' >&2
     exit 2
     ;;
   *)

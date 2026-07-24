@@ -1,10 +1,12 @@
 ---
 name: ai-browser-control-chromeos
 description: Control the user's existing ChromeOS Chrome browser from an AI coding agent running in Chromebook Crostini, preserving live tabs, cookies, and user-driven logins through an agent-managed background connection. Use this skill whenever a user asks an agent to browse live in their Chromebook browser, continue after the user logs in, replace repeated extension Connect tabs, or obtain behavior similar to `claude --chrome` from Codex or another terminal agent. The agent must run and supervise all terminal processes itself; never ask the user to run connection commands.
-compatibility: Chromebook Crostini with Bash, Node.js 18+, npm, Python 3, garcon-url-handler, and the official Playwright Chrome extension.
 ---
 
 # AI Browser Control for ChromeOS
+
+Requires Chromebook Crostini with Bash, Node.js 18+, npm, Python 3,
+`garcon-url-handler`, and the official Playwright Chrome extension.
 
 ## Quick Start
 
@@ -20,6 +22,9 @@ ai-browser-control-chromeos snapshot
 If connection fails: `ai-browser-control-chromeos reconnect` (kills old supervisor, starts fresh).
 For continuous supervision: `ai-browser-control-chromeos connect --persistent`
 restarts the handoff after a disconnect; the user still completes any Chrome UI step.
+If the agent host removes detached child processes, run
+`ai-browser-control-chromeos connect-foreground --persistent` in a long-lived terminal
+tool session and keep that session open while issuing browser commands separately.
 
 Control the user's existing ChromeOS Chrome profile from a terminal-based AI agent.
 The workflow uses a named Playwright CLI session so separate shell calls and AI
@@ -101,6 +106,15 @@ redacted log with `ai-browser-control-chromeos logs 40`.
 **Recovery commands:**
 - `ai-browser-control-chromeos reconnect` -- kill stale supervisor and start fresh (triggers new handoff)
 - `ai-browser-control-chromeos connect --persistent` -- keep restarting the handoff after session drops
+- `ai-browser-control-chromeos connect-foreground --persistent` -- supervise in a
+  long-lived terminal session when the agent host removes detached children
+
+For foreground supervision, start the command with the agent's terminal execution
+tool and allow it to yield a live session ID. Do not append `&`, do not wait for the
+command to exit, and do not ask the user to keep a terminal open. Use separate
+wrapper invocations for `status`, `wait`, and browser actions. The foreground
+supervisor writes the normal PID and redacted log files, so those commands work the
+same way as they do with background supervision.
 
 The token bypasses the extension's approval dialog; it cannot make Crostini directly
 open a `chrome-extension://` URL. The copy-and-paste handoff is therefore expected
@@ -171,8 +185,14 @@ When an action fails:
 1. Run `ai-browser-control-chromeos status`.
 2. If the session is open, retry with a new snapshot rather than reconnecting.
 3. If the session is closed, try `ai-browser-control-chromeos reconnect` (kills stale supervisor, starts fresh).
-4. If reconnect fails, check `SKILL_ROOT/scripts/doctor.sh`.
-5. If disconnected, run `ai-browser-control-chromeos connect` yourself and ask the
+4. If the new background process disappears between tool calls, start
+   `ai-browser-control-chromeos connect-foreground --persistent` in a long-lived
+   terminal tool session.
+5. If multiple old Playwright daemons or handoff tabs remain, follow the targeted
+   daemon cleanup in the troubleshooting reference once, then start one foreground
+   supervisor.
+6. If reconnect fails, check `SKILL_ROOT/scripts/doctor.sh`.
+7. If disconnected, run the appropriate connection command yourself and ask the
    user only for the Chrome UI handoff.
 
 For `ERR_BLOCKED_BY_CLIENT`, use the local handoff page; do not click or open its

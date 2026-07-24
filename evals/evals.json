@@ -24,6 +24,12 @@
       "prompt": "Do not tell me to open a Linux terminal or run anything. Connect to my Chromebook Chrome and manage the process yourself; I will only click in Chrome and log in when you tell me.",
       "expected_output": "The agent runs connect in the background, polls status or wait, inspects redacted logs if needed, asks the user only for Chrome UI and login actions, and performs cleanup itself.",
       "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Your browser supervisor dies as soon as the terminal call returns, and each retry leaves another stale Connect tab. Fix it without asking me to run commands.",
+      "expected_output": "The agent recognizes that the host removes detached child processes, stops repeating background connect, cleans stale Playwright daemons once if needed, starts connect-foreground --persistent in a long-lived terminal tool session, verifies it through a separate status call, and asks the user only to complete the newest Chrome handoff.",
+      "files": []
     }
   ]
 }

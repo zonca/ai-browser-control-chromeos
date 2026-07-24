@@ -209,6 +209,34 @@ rm -f "$lifecycle_browser_state"
 wait_for_attach_count 4
 env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 
+rm -f "$lifecycle_browser_state"
+foreground_log="$cache_dir/foreground.log"
+env "${persistent_env[@]}" \
+  "$root/bin/ai-browser-control-chromeos" connect-foreground --persistent \
+  >"$foreground_log" 2>&1 &
+foreground_pid=$!
+for ((attempt = 0; attempt < 50; attempt++)); do
+  [[ -r "$lifecycle_state/connect-chromeos.pid" ]] && break
+  sleep 0.1
+done
+[[ "$(<"$lifecycle_state/connect-chromeos.pid")" == "$foreground_pid" ]]
+foreground_command="$(tr '\0' ' ' <"/proc/$foreground_pid/cmdline")"
+[[ "$foreground_command" == *'connect-foreground --persistent'* ]]
+set +e
+status_output="$(env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" status)"
+status_code=$?
+set -e
+[[ $status_code -eq 2 || $status_code -eq 0 ]]
+[[ "$status_output" == connecting:* || "$status_output" == connected:* ]]
+wait_for_attach_count 5
+env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+for ((attempt = 0; attempt < 50; attempt++)); do
+  ! kill -0 "$foreground_pid" 2>/dev/null && break
+  sleep 0.1
+done
+! kill -0 "$foreground_pid" 2>/dev/null
+[[ "$(cat "$foreground_log")" == *'Foreground connection supervisor started'* ]]
+
 snapshot_file="$cache_dir/feed-snapshot.yml"
 cat >"$snapshot_file" <<'YAML'
 - article "Feed post":

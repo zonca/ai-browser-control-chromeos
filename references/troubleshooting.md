@@ -117,16 +117,31 @@ external ChromeOS browser, but all extension connections must be re-established.
 
 ## The daemon disappears between agent turns
 
-Some agent hosts clean up background children between turns. The next agent should
-detect that state and restart the background connection itself:
+Some agent hosts clean up background children between terminal calls. If a newly
+started supervisor disappears immediately, do not repeat the same background
+command. Start a foreground persistent supervisor with the agent's terminal tool:
 
 ```bash
 ai-browser-control-chromeos status
-ai-browser-control-chromeos connect
+ai-browser-control-chromeos connect-foreground --persistent
 ```
 
-Ask the user only to repeat the Chrome address-bar handoff if a new page opens. Never
-delegate process startup or monitoring to the user.
+Allow the terminal tool to yield a live session ID and keep that session open. Run
+`status`, `wait`, and browser commands through separate calls. Do not append `&` and
+do not ask the user to keep a terminal open. The foreground command registers its
+PID, so ordinary status and disconnect commands can see and stop it.
+
+If repeated failed handoffs have left multiple Playwright daemons or stale Connect
+tabs, first run:
+
+```bash
+ai-browser-control-chromeos disconnect
+playwright-cli kill-all
+```
+
+Then start exactly one foreground persistent supervisor and use only the newest
+handoff page. `kill-all` ends every Playwright CLI session for the current Linux
+user, so use it only after targeted reconnect attempts fail.
 
 ## Different agents need different session names
 

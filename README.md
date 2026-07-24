@@ -142,6 +142,19 @@ background process is connecting, and `1` when disconnected. `wait` returns `124
 on timeout. Connection logs are token-redacted and stored under
 `~/.local/state/ai-browser-control-chromeos/`.
 
+Some agent hosts remove detached child processes after a terminal call finishes. If
+the supervisor immediately disappears, the agent starts a foreground supervisor in
+a long-lived terminal tool session:
+
+```bash
+ai-browser-control-chromeos connect-foreground --persistent
+```
+
+The agent keeps that tool session alive and uses separate commands for `status`,
+`wait`, and browser actions. The user still performs only the Chrome address-bar
+handoff. Foreground mode writes the same PID and redacted log files as background
+mode, so monitoring and cleanup commands remain unchanged.
+
 Then use the browser-control commands:
 
 ```bash
