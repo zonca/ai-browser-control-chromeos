@@ -121,6 +121,7 @@ start_background_connection() {
   fi
 
   rm -f "$pid_file"
+  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
   : >"$log_file"
   supervisor_args=(__connect-supervisor)
   if [[ "$persistent" == true ]]; then
@@ -167,6 +168,7 @@ start_foreground_connection() {
   fi
 
   rm -f "$pid_file"
+  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
   : >"$log_file"
   printf '%s\n' "$$" >"$pid_file"
   printf 'Foreground connection supervisor started (pid %s).\n' "$$"
@@ -272,6 +274,7 @@ disconnect_browser() {
   if [[ -n "$pid" ]]; then
     kill "$pid" 2>/dev/null || true
   fi
+  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
   rm -f "$pid_file"
   printf 'Browser-control session %s stopped.\n' "$session"
 }
