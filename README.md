@@ -146,6 +146,11 @@ connection service is waiting, and `1` when disconnected. `wait` returns `124`
 on timeout. Connection logs are token-redacted and stored under
 `~/.local/state/ai-browser-control-chromeos/`.
 
+After Playwright reports a successful attachment, the supervisor allows time for the
+named session to become visible and requires multiple consecutive visibility misses
+before declaring a disconnect. This avoids tearing down a healthy relay during the
+short registration window immediately after the Chrome handoff.
+
 If a host does not expose a working user service manager, `connect` exits 3 instead
 of claiming that a disposable background child started. The agent then starts a
 foreground supervisor in one long-lived terminal tool session:

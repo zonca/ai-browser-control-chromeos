@@ -157,17 +157,21 @@ command="${1:-}"
 browser_state="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-browser-state"
 attach_count="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-count"
 attach_delay="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-delay"
+list_ready_at="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-list-ready-at"
 trace="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-trace"
 
 case "$command" in
   list)
-    if [[ -r "$browser_state" ]]; then
+    now="$(date +%s%N)"
+    ready_at=0
+    [[ ! -r "$list_ready_at" ]] || ready_at="$(<"$list_ready_at")"
+    if [[ -r "$browser_state" ]] && ((now >= ready_at)); then
       trace_state=present
     else
       trace_state=absent
     fi
     printf '%s pid=%s list state=%s\n' "$(date +%s.%N)" "$$" "$trace_state" >>"$trace"
-    if [[ -r "$browser_state" ]]; then
+    if [[ "$trace_state" == present ]]; then
       printf '%s\n' \
         '### Browsers' \
         "- $session:" \
@@ -185,13 +189,14 @@ case "$command" in
       "$(date +%s.%N)" "$$" "$PPID" "$((count + 1))" >>"$trace"
     sleep "$(<"$attach_delay")"
     printf '%s\n' 'open' >"$browser_state"
+    printf '%s\n' "$(( $(date +%s%N) + 250000000 ))" >"$list_ready_at"
     printf '%s pid=%s ppid=%s attach-open count=%s\n' \
       "$(date +%s.%N)" "$$" "$PPID" "$((count + 1))" >>"$trace"
     printf 'relay token: %s\n' "$PLAYWRIGHT_MCP_EXTENSION_TOKEN"
     ;;
   detach)
     printf '%s pid=%s detach\n' "$(date +%s.%N)" "$$" >>"$trace"
-    rm -f "$browser_state"
+    rm -f "$browser_state" "$list_ready_at"
     ;;
   *)
     printf 'unsupported fake command: %s\n' "$command" >&2
@@ -210,6 +215,8 @@ lifecycle_env=(
   AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR="$lifecycle_state"
   AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=0.05
   AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.05
+  AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=2
+  AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=3
 )
 
 set +e
@@ -324,10 +331,13 @@ if [[ "$systemd_usable" == true ]]; then
   persistent_command="$(tr '\0' ' ' <"/proc/$persistent_pid/cmdline")"
   [[ "$persistent_command" == *'__connect-supervisor --persistent'* ]]
   wait_for_attach_count "$((count_before + 1))" || exit 1
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
   rm -f "$lifecycle_browser_state"
   wait_for_attach_count "$((count_before + 2))" || exit 1
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
   rm -f "$lifecycle_browser_state"
   wait_for_attach_count "$((count_before + 3))" || exit 1
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 else
   printf '%s\n' 'SKIP  durable systemd integration (user service manager unavailable)'
@@ -357,6 +367,8 @@ set -e
 [[ $status_code -eq 2 || $status_code -eq 0 ]]
 [[ "$status_output" == connecting:* || "$status_output" == connected:* ]]
 wait_for_attach_count "$((count_before + 1))" || exit 1
+env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+  "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
 env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 for _ in {1..50}; do

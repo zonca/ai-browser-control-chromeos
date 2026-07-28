@@ -8,6 +8,8 @@ output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-ch
 state_dir="${AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR:-$HOME/.local/state/ai-browser-control-chromeos}"
 poll_interval="${AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL:-15}"
 reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
+attach_ready_timeout="${AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT:-10}"
+disconnect_misses="${AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES:-3}"
 supervisor_mode="${AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR:-auto}"
 self="$(readlink -f "$0")"
 
@@ -17,6 +19,10 @@ if [[ ! "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
 fi
 if [[ "$supervisor_mode" != auto && "$supervisor_mode" != systemd && "$supervisor_mode" != foreground ]]; then
   printf 'AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR must be auto, systemd, or foreground.\n' >&2
+  exit 2
+fi
+if [[ ! "$attach_ready_timeout" =~ ^[0-9]+$ || ! "$disconnect_misses" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'Attach timeout must be non-negative and disconnect misses must be positive integers.\n' >&2
   exit 2
 fi
 
@@ -231,6 +237,8 @@ start_systemd_connection() {
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR=$state_dir"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=$poll_interval"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=$reconnect_delay"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=$attach_ready_timeout"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=$disconnect_misses"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=systemd"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLI=$playwright_cli"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=$connect_helper"
@@ -311,6 +319,32 @@ start_foreground_connection() {
   fi
 }
 
+wait_for_attached_session() {
+  local attempt attempts=$((attach_ready_timeout * 10 + 1))
+  for ((attempt = 0; attempt < attempts; attempt++)); do
+    if session_is_open; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'Playwright reported an attachment, but session %s did not become visible within %s seconds.\n' \
+    "$session" "$attach_ready_timeout"
+  return 1
+}
+
+monitor_attached_session() {
+  local misses=0
+  while ((misses < disconnect_misses)); do
+    sleep "$poll_interval"
+    if session_is_open; then
+      misses=0
+    else
+      ((misses += 1))
+      printf 'Session visibility check missed (%s/%s).\n' "$misses" "$disconnect_misses"
+    fi
+  done
+}
+
 run_supervisor() {
   local persistent_mode=false
   while (($#)); do
@@ -330,9 +364,12 @@ run_supervisor() {
 
   while true; do
     if run_cli attach "--extension=$browser"; then
-      while session_is_open; do
-        sleep "$poll_interval"
-      done
+      if wait_for_attached_session; then
+        printf 'Session %s is ready; monitoring connection health.\n' "$session"
+        monitor_attached_session
+      elif [[ "$persistent_mode" != true ]]; then
+        return 1
+      fi
     elif [[ "$persistent_mode" != true ]]; then
       return 1
     fi
