@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "I am on a Chromebook and the Playwright extension is already installed. Use my live Chrome browser, take me to an account login page, let me sign in myself, then continue the task without opening a fresh browser profile.",
-      "expected_output": "The agent diagnoses or reuses the named chromeos session, launches the connection in the background itself if needed, hands only Chrome UI and login to the user, and continues without requesting credentials or terminal commands.",
+      "expected_output": "The agent diagnoses or reuses the named chromeos session, launches one durable user-service connection itself if needed, hands only Chrome UI and login to the user, and continues without requesting credentials or terminal commands.",
       "files": []
     },
     {
@@ -16,19 +16,25 @@
     {
       "id": 3,
       "prompt": "Every browser command opens another Playwright Connect tab and this is pointless. Fix the workflow so separate commands reuse my existing logged-in ChromeOS browser.",
-      "expected_output": "The agent identifies repeated attach or short-lived MCP sessions as the cause, starts one supervised background connection itself, and verifies reuse with status plus two separate browser commands.",
+      "expected_output": "The agent identifies repeated attach or short-lived MCP sessions as the cause, starts one durable user-service connection itself, and verifies reuse with status plus two separate browser commands.",
       "files": []
     },
     {
       "id": 4,
       "prompt": "Do not tell me to open a Linux terminal or run anything. Connect to my Chromebook Chrome and manage the process yourself; I will only click in Chrome and log in when you tell me.",
-      "expected_output": "The agent runs connect in the background, polls status or wait, inspects redacted logs if needed, asks the user only for Chrome UI and login actions, and performs cleanup itself.",
+      "expected_output": "The agent runs the durable connect command, polls status or wait, inspects redacted logs if needed, asks the user only for Chrome UI and login actions, and performs cleanup itself.",
       "files": []
     },
     {
       "id": 5,
       "prompt": "Your browser supervisor dies as soon as the terminal call returns, and each retry leaves another stale Connect tab. Fix it without asking me to run commands.",
-      "expected_output": "The agent recognizes that the host removes detached child processes, stops repeating background connect, cleans stale Playwright daemons once if needed, starts connect-foreground --persistent in a long-lived terminal tool session, verifies it through a separate status call, and asks the user only to complete the newest Chrome handoff.",
+      "expected_output": "The agent uses the durable user service by default; if connect explicitly reports that user services are unavailable, it starts connect-foreground in a long-lived terminal tool session, verifies it through a separate status call, and asks the user only to complete the newest Chrome handoff.",
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "The Playwright tab says 'Missing mcpRelayUrl parameter in URL', and when I retry another old tab it says 'Failed to connect to MCP relay: WebSocket error'. Make the browser connection work without sending me through several more attempts.",
+      "expected_output": "The agent identifies both pages as malformed or stale, tells the user not to reuse them or the old clipboard value, checks status and redacted logs, performs at most one targeted reconnect if disconnected, and directs the user to only the single newest validated handoff tab.",
       "files": []
     }
   ]

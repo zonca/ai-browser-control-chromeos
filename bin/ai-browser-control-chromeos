@@ -8,9 +8,23 @@ output_dir="${AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR:-/tmp/ai-browser-control-ch
 state_dir="${AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR:-$HOME/.local/state/ai-browser-control-chromeos}"
 poll_interval="${AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL:-15}"
 reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
-pid_file="$state_dir/connect-${session}.pid"
-log_file="$state_dir/connect-${session}.log"
+supervisor_mode="${AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR:-auto}"
 self="$(readlink -f "$0")"
+
+if [[ ! "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
+  printf 'Invalid session name: use 1-64 letters, digits, dots, underscores, or hyphens.\n' >&2
+  exit 2
+fi
+if [[ "$supervisor_mode" != auto && "$supervisor_mode" != systemd && "$supervisor_mode" != foreground ]]; then
+  printf 'AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR must be auto, systemd, or foreground.\n' >&2
+  exit 2
+fi
+
+pid_file="$state_dir/connect-${session}.pid"
+handoff_pid_file="$state_dir/handoff-${session}.pid"
+log_file="$state_dir/connect-${session}.log"
+service_name="ai-browser-control-chromeos-${UID}-${session}"
+service_unit="${service_name}.service"
 
 if [[ ! -r "$token_file" ]]; then
   printf 'Missing browser extension token: %s\nRun the skill setup script first.\n' "$token_file" >&2
@@ -47,6 +61,9 @@ export PLAYWRIGHT_MCP_EXTENSION_TOKEN="$token"
 export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$connect_helper"
 export PLAYWRIGHT_MCP_OUTPUT_DIR="$output_dir"
 export NODE_OPTIONS="--dns-result-order=ipv4first${NODE_OPTIONS:+ $NODE_OPTIONS}"
+export AI_BROWSER_CONTROL_CHROMEOS_HANDOFF_PID_FILE="$handoff_pid_file"
+export AI_BROWSER_CONTROL_CHROMEOS_SESSION="$session"
+export AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR="$state_dir"
 
 run_cli() {
   set +e
@@ -74,11 +91,29 @@ session_is_open() {
   [[ "$listing" == *"- $session:"* && "$listing" == *"status: open"* ]]
 }
 
-supervisor_pid() {
+systemd_available() {
+  [[ "$supervisor_mode" != foreground ]] || return 1
+  command -v systemctl >/dev/null 2>&1 || return 1
+  command -v systemd-run >/dev/null 2>&1 || return 1
+  systemctl --user show-environment >/dev/null 2>&1
+}
+
+service_pid() {
+  systemd_available || return 1
+  local active pid
+  active="$(systemctl --user show "$service_unit" -p ActiveState --value 2>/dev/null || true)"
+  [[ "$active" == active || "$active" == activating ]] || return 1
+  pid="$(systemctl --user show "$service_unit" -p MainPID --value 2>/dev/null || true)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+recorded_pid() {
   [[ -r "$pid_file" ]] || return 1
   local pid command_line
   pid="$(<"$pid_file")"
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   [[ -r "/proc/$pid/cmdline" ]] || return 1
   command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
@@ -89,24 +124,137 @@ supervisor_pid() {
   printf '%s\n' "$pid"
 }
 
+supervisor_pid() {
+  service_pid 2>/dev/null || recorded_pid
+}
+
+write_pid_file() {
+  local temporary="${pid_file}.tmp.$$"
+  printf '%s\n' "$$" >"$temporary"
+  mv -f "$temporary" "$pid_file"
+}
+
 remove_own_pid_file() {
   [[ -r "$pid_file" ]] || return 0
   [[ "$(<"$pid_file")" == "$$" ]] || return 0
   rm -f "$pid_file"
 }
 
-start_background_connection() {
-  local persistent=false
-  local -a supervisor_args
+handoff_pid() {
+  [[ -r "$handoff_pid_file" ]] || return 1
+  local pid command_line
+  pid="$(<"$handoff_pid_file")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$command_line" == *"ai-browser-control-chromeos-connect"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+stop_handoff() {
+  local pid
+  pid="$(handoff_pid || true)"
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$handoff_pid_file"
+}
+
+terminate_session_processes() {
+  local environ_file pid command_line
+  for environ_file in /proc/[0-9]*/environ; do
+    pid="${environ_file#/proc/}"
+    pid="${pid%/environ}"
+    [[ "$pid" != "$$" ]] || continue
+    [[ -r "$environ_file" && -r "/proc/$pid/cmdline" ]] || continue
+    grep -zFxq "AI_BROWSER_CONTROL_CHROMEOS_SESSION=$session" "$environ_file" 2>/dev/null || continue
+    grep -zFxq "AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR=$state_dir" "$environ_file" 2>/dev/null || continue
+    command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$command_line" in
+      *"ai-browser-control-chromeos __connect-supervisor"*|\
+      *"ai-browser-control-chromeos connect-foreground"*|\
+      *"playwright-cli -s=$session attach"*|\
+      *"ai-browser-control-chromeos-connect"*)
+        kill "$pid" 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+parse_persistent_flag() {
+  persistent=false
   while (($#)); do
     case "$1" in
       --persistent) persistent=true; shift ;;
       *)
-        printf 'Unsupported connect argument: %s\n' "$1" >&2
+        printf 'Unsupported connection argument: %s\n' "$1" >&2
         return 2
         ;;
     esac
   done
+}
+
+start_systemd_connection() {
+  local persistent="$1"
+  local -a command_args systemd_args
+  command_args=("$self" __connect-supervisor)
+  [[ "$persistent" != true ]] || command_args+=(--persistent)
+
+  systemctl --user stop "$service_unit" >/dev/null 2>&1 || true
+  systemctl --user reset-failed "$service_unit" >/dev/null 2>&1 || true
+  terminate_session_processes
+  rm -f "$pid_file"
+  stop_handoff
+  : >"$log_file"
+
+  systemd_args=(
+    systemd-run --user --quiet
+    "--unit=$service_name"
+    --collect
+    --service-type=exec
+    --property=KillMode=control-group
+    --property=TimeoutStopSec=3s
+    "--property=StandardOutput=append:$log_file"
+    "--property=StandardError=append:$log_file"
+    "--setenv=HOME=$HOME"
+    "--setenv=PATH=$PATH"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE=$token_file"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SESSION=$session"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_BROWSER=$browser"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR=$output_dir"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR=$state_dir"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=$poll_interval"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=$reconnect_delay"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=systemd"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLI=$playwright_cli"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=$connect_helper"
+  )
+  "${systemd_args[@]}" "${command_args[@]}"
+
+  local pid=""
+  for _ in {1..30}; do
+    pid="$(service_pid || true)"
+    [[ -z "$pid" ]] || break
+    sleep 0.1
+  done
+  if [[ -z "$pid" ]]; then
+    printf 'Durable connection service failed to start.\n' >&2
+    tail -n 30 "$log_file" >&2 || true
+    return 1
+  fi
+
+  printf 'Durable connection service started (pid %s).\n' "$pid"
+  printf 'Log: %s\n' "$log_file"
+}
+
+start_connection() {
+  parse_persistent_flag "$@" || return
 
   if session_is_open; then
     printf 'Browser session %s is already connected.\n' "$session"
@@ -115,46 +263,31 @@ start_background_connection() {
 
   local pid
   if pid="$(supervisor_pid)"; then
-    printf 'Background connection is already running (pid %s).\n' "$pid"
+    printf 'Connection supervisor is already running (pid %s).\n' "$pid"
     printf 'Log: %s\n' "$log_file"
     return 0
   fi
 
   rm -f "$pid_file"
-  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
-  : >"$log_file"
-  supervisor_args=(__connect-supervisor)
-  if [[ "$persistent" == true ]]; then
-    supervisor_args+=(--persistent)
-  fi
-  nohup "$self" "${supervisor_args[@]}" >>"$log_file" 2>&1 </dev/null &
-  pid=$!
-  printf '%s\n' "$pid" >"$pid_file"
-
-  # Delayed health check: wait 2 seconds and verify the supervisor is still alive
-  sleep 2
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -f "$pid_file"
-    printf 'Background connection failed to start (process exited after spawn).\n' >&2
-    tail -n 20 "$log_file" >&2 || true
-    return 1
+  if systemd_available; then
+    start_systemd_connection "$persistent"
+    return
   fi
 
-  printf 'Background connection started (pid %s).\n' "$pid"
-  printf 'Log: %s\n' "$log_file"
+  if [[ "$supervisor_mode" == systemd ]]; then
+    printf 'The Crostini user service manager is unavailable.\n' >&2
+  else
+    printf 'Durable background supervision is unavailable in this agent host.\n' >&2
+  fi
+  local foreground_suffix=""
+  [[ "$persistent" != true ]] || foreground_suffix=" --persistent"
+  printf 'The agent should run: ai-browser-control-chromeos connect-foreground%s\n' \
+    "$foreground_suffix" >&2
+  return 3
 }
 
 start_foreground_connection() {
-  local persistent=false
-  while (($#)); do
-    case "$1" in
-      --persistent) persistent=true; shift ;;
-      *)
-        printf 'Unsupported connect-foreground argument: %s\n' "$1" >&2
-        return 2
-        ;;
-    esac
-  done
+  parse_persistent_flag "$@" || return
 
   if session_is_open; then
     printf 'Browser session %s is already connected.\n' "$session"
@@ -168,10 +301,9 @@ start_foreground_connection() {
   fi
 
   rm -f "$pid_file"
-  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
+  stop_handoff
   : >"$log_file"
-  printf '%s\n' "$$" >"$pid_file"
-  printf 'Foreground connection supervisor started (pid %s).\n' "$$"
+  printf 'Foreground connection supervisor starting.\n'
   if [[ "$persistent" == true ]]; then
     run_supervisor --persistent 2>&1 | tee -a "$log_file"
   else
@@ -191,7 +323,11 @@ run_supervisor() {
     esac
   done
 
+  write_pid_file
   trap remove_own_pid_file EXIT
+  trap 'exit 0' TERM INT
+  printf 'Connection supervisor ready (pid %s, session %s).\n' "$$" "$session"
+
   while true; do
     if run_cli attach "--extension=$browser"; then
       while session_is_open; do
@@ -215,7 +351,7 @@ show_status() {
 
   local pid
   if pid="$(supervisor_pid)"; then
-    printf 'connecting: supervisor process %s is waiting for Chrome\n' "$pid"
+    printf 'connecting: durable supervisor %s is waiting for Chrome\n' "$pid"
     return 2
   fi
 
@@ -240,7 +376,7 @@ wait_for_connection() {
     fi
     if ! pid="$(supervisor_pid)"; then
       printf 'Connection supervisor stopped before Chrome connected.\n' >&2
-      tail -n 20 "$log_file" >&2 || true
+      tail -n 30 "$log_file" >&2 || true
       return 1
     fi
     now="$(date +%s)"
@@ -259,22 +395,40 @@ show_logs() {
     return 2
   }
   [[ -r "$log_file" ]] || {
-    printf 'No background connection log exists for session %s.\n' "$session"
+    printf 'No connection log exists for session %s.\n' "$session"
     return 1
   }
   tail -n "$lines" "$log_file"
 }
 
+stop_recorded_supervisor() {
+  local pid="$1"
+  kill "$pid" 2>/dev/null || true
+  for _ in {1..30}; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
 disconnect_browser() {
   local pid=""
   pid="$(supervisor_pid || true)"
+
   if session_is_open; then
     run_cli detach || true
   fi
-  if [[ -n "$pid" ]]; then
-    kill "$pid" 2>/dev/null || true
+  if systemd_available; then
+    systemctl --user stop "$service_unit" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$service_unit" >/dev/null 2>&1 || true
   fi
-  pkill -f "ai-browser-control-chromeos-connect" 2>/dev/null || true
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    stop_recorded_supervisor "$pid"
+  fi
+  terminate_session_processes
+  sleep 0.1
+  terminate_session_processes
+  stop_handoff
   rm -f "$pid_file"
   printf 'Browser-control session %s stopped.\n' "$session"
 }
@@ -282,7 +436,7 @@ disconnect_browser() {
 case "${1:-}" in
   connect)
     shift
-    start_background_connection "$@"
+    start_connection "$@"
     ;;
   connect-foreground)
     shift
@@ -322,20 +476,15 @@ case "${1:-}" in
     ;;
   reconnect)
     shift
-    [[ $# -eq 0 ]] || {
-      printf 'reconnect does not accept arguments\n' >&2
-      exit 2
-    }
     disconnect_browser
-    sleep 1
-    start_background_connection
+    start_connection "$@"
     ;;
   __connect-supervisor)
     shift
     run_supervisor "$@"
     ;;
   "")
-    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|connect-foreground [--persistent]|status|wait|logs|disconnect|reconnect|<browser-command>}\n' >&2
+    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|connect-foreground [--persistent]|status|wait|logs|disconnect|reconnect [--persistent]|<browser-command>}\n' >&2
     exit 2
     ;;
   *)

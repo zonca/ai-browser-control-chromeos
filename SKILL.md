@@ -1,141 +1,135 @@
 ---
 name: ai-browser-control-chromeos
-description: Control the user's existing ChromeOS Chrome browser from an AI coding agent running in Chromebook Crostini, preserving live tabs, cookies, and user-driven logins through an agent-managed background connection. Use this skill whenever a user asks an agent to browse live in their Chromebook browser, continue after the user logs in, replace repeated extension Connect tabs, or obtain behavior similar to `claude --chrome` from Codex or another terminal agent. The agent must run and supervise all terminal processes itself; never ask the user to run connection commands.
+description: Control the user's existing ChromeOS Chrome browser from an AI coding agent running in Chromebook Crostini, preserving live tabs, cookies, and user-driven logins through one durable Playwright extension connection. Use this whenever the user asks an agent to browse in their current Chromebook Chrome, continue after interactive login, troubleshoot repeated Connect tabs or relay errors, or obtain behavior similar to `claude --chrome`. The agent owns every terminal process and diagnostic; the user only performs Chrome UI handoff, login, MFA, and approval steps.
 ---
 
 # AI Browser Control for ChromeOS
 
-Requires Chromebook Crostini with Bash, Node.js 18+, npm, Python 3,
-`garcon-url-handler`, and the official Playwright Chrome extension.
+Connect an agent in Crostini to the user's existing ChromeOS Chrome profile through
+the official Playwright extension. Reuse one named session across separate terminal
+calls so tabs, cookies, and interactive login state remain available.
 
-## Quick Start
+## Keep responsibilities clear
+
+The agent runs diagnostics, setup, connection services, polling, logs, browser
+commands, and cleanup. The user installs the Chrome extension, enters its token
+through a hidden local prompt, completes the Chrome address-bar handoff, logs in,
+and approves consequential actions.
+
+Never ask the user to run terminal commands or paste passwords, MFA codes, cookies,
+or the extension token into chat.
+
+## Locate the runtime
+
+Resolve the directory containing this file as `SKILL_ROOT`. Run bundled scripts by
+absolute path because the user's working directory may be an unrelated repository.
+
+Read [README.md](README.md) for installation or architecture questions. Read
+[references/troubleshooting.md](references/troubleshooting.md) only after the normal
+connection path fails.
+
+## Start every browser task with discovery
+
+Run:
 
 ```bash
-ai-browser-control-chromeos status   # check if connected
-ai-browser-control-chromeos connect   # start background supervisor
-# -> User clicks "Copy browser connection address" in Chrome, then Ctrl+L, Ctrl+V, Enter
-ai-browser-control-chromeos status    # verify: "connected: session chromeos is open"
-ai-browser-control-chromeos goto https://example.com
-ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos status
 ```
 
-If connection fails: `ai-browser-control-chromeos reconnect` (kills old supervisor, starts fresh).
-For continuous supervision: `ai-browser-control-chromeos connect --persistent`
-restarts the handoff after a disconnect; the user still completes any Chrome UI step.
-If the agent host removes detached child processes, run
-`ai-browser-control-chromeos connect-foreground --persistent` in a long-lived terminal
-tool session and keep that session open while issuing browser commands separately.
+Interpret the result:
 
-Control the user's existing ChromeOS Chrome profile from a terminal-based AI agent.
-The workflow uses a named Playwright CLI session so separate shell calls and AI
-agents can reuse one extension connection.
+- Exit 0, `connected`: reuse the session; do not call `connect`.
+- Exit 2, `connecting`: keep the existing service and wait; do not open another relay.
+- Exit 1, `disconnected`: start one connection.
+- Missing command or prerequisite error: run `SKILL_ROOT/scripts/doctor.sh` and fix
+  only what it reports.
 
-## Keep human and agent responsibilities separate
+## Set up a new Chromebook
 
-The user installs the Chrome extension, enters its token through a hidden prompt,
-completes interactive login, and approves sensitive actions. The agent runs every
-terminal command: diagnostics, setup, background connection, polling, browser
-control, logs, and cleanup.
-
-This separation keeps credentials out of chat and avoids pretending that Crostini
-can directly install or inspect an extension in ChromeOS Chrome.
-
-## Locate this skill
-
-Resolve the directory containing this `SKILL.md` as `SKILL_ROOT`. Run bundled scripts
-with absolute paths based on that directory; do not assume the current working
-directory is the skill repository.
-
-Read [README.md](README.md) when explaining motivation, installation, or what the
-user must do. Read [references/troubleshooting.md](references/troubleshooting.md)
-only when connection or command reuse fails.
-
-## Start every browser task with session discovery
-
-1. Check whether `ai-browser-control-chromeos` is available.
-2. Run `ai-browser-control-chromeos status`.
-3. If connected, reuse the session. If connecting, do not run `connect` again.
-4. If the command or prerequisites are missing, run `SKILL_ROOT/scripts/doctor.sh`
-   and report only the missing items.
-5. If disconnected, run `ai-browser-control-chromeos connect` yourself and guide
-   the user through only the Chrome UI handoff.
-
-`connect` is idempotent: it reuses an open session or existing background supervisor
-instead of creating another Connect tab.
-
-## Set up a new machine
-
-Do not silently install a Chrome extension or solicit its token in chat. Give the
-user the official extension link from README and ask them to install it in ChromeOS
-Chrome. Run this command yourself:
+Ask the user to install the official extension named in README. Then run:
 
 ```bash
 SKILL_ROOT/scripts/setup.sh
 ```
 
-Use the actual absolute value of `SKILL_ROOT` in the command you show. The script
-permanently installs Playwright CLI, installs the local wrappers, prompts privately
-for the token, and installs the skill in the selected agent skill directory.
+The setup stores the token outside the repository with mode `600`. Pause at its
+hidden prompt so the user can type the token privately. Do not request the token in
+chat. After setup, rerun the doctor and continue with the normal connection path.
 
-If setup needs the token, pause at the hidden prompt so the user can enter it or ask
-them to place it in a trusted secret environment. Never ask for it in chat. After
-setup, rerun the doctor and connect yourself.
+## Create one durable connection
 
-## Connect ChromeOS Chrome
-
-Start the connection yourself:
+Run:
 
 ```bash
 ai-browser-control-chromeos connect
 ```
 
-`connect` returns immediately after launching a background supervisor (with a 2-second
-health check). The ChromeOS handoff page asks the user to click **Copy browser connection
-address**. Ask them to click it, then press **Ctrl+L**, **Ctrl+V**, and **Enter** in
-Chrome. Do not ask them to use a terminal. Poll while they perform the UI step:
+On Crostini this starts a user service, so the Playwright relay survives after the
+agent's short terminal call exits. `connect` is idempotent and reports an existing
+session or supervisor instead of creating another handoff.
+
+If `connect` exits 3 because durable user services are unavailable, immediately
+start this in a long-lived terminal tool call:
 
 ```bash
-ai-browser-control-chromeos status
+ai-browser-control-chromeos connect-foreground
+```
+
+Let the terminal tool yield a live session ID. Keep that tool session open and use
+separate calls for status and browser actions. This is a host fallback, not a step
+for the user.
+
+When the newest local page titled **Connect AI agent to Chrome** appears, tell the
+user:
+
+> In the newest “Connect AI agent to Chrome” tab, click **Copy browser connection
+> address**, then press **Ctrl+L**, **Ctrl+V**, and **Enter**. Ignore or close older
+> Playwright Connect/error tabs.
+
+Then run:
+
+```bash
 ai-browser-control-chromeos wait 180
 ```
 
-Use `wait` after telling the user what to click, or poll `status` periodically when
-the agent runtime should remain responsive. If connection fails, inspect the
-redacted log with `ai-browser-control-chromeos logs 40`.
+Use `status` periodically instead when the agent runtime needs short responsive
+calls. If waiting fails, inspect `ai-browser-control-chromeos logs 40`; logs redact
+the extension token.
 
-**Recovery commands:**
-- `ai-browser-control-chromeos reconnect` -- kill stale supervisor and start fresh (triggers new handoff)
-- `ai-browser-control-chromeos connect --persistent` -- keep restarting the handoff after session drops
-- `ai-browser-control-chromeos connect-foreground --persistent` -- supervise in a
-  long-lived terminal session when the agent host removes detached children
-
-For foreground supervision, start the command with the agent's terminal execution
-tool and allow it to yield a live session ID. Do not append `&`, do not wait for the
-command to exit, and do not ask the user to keep a terminal open. Use separate
-wrapper invocations for `status`, `wait`, and browser actions. The foreground
-supervisor writes the normal PID and redacted log files, so those commands work the
-same way as they do with background supervision.
-
-The token bypasses the extension's approval dialog; it cannot make Crostini directly
-open a `chrome-extension://` URL. The copy-and-paste handoff is therefore expected
-once per browser/daemon lifetime.
-
-Verify persistence with two separate invocations, for example:
+Verify reuse with two separate commands:
 
 ```bash
 ai-browser-control-chromeos tab-list
 ai-browser-control-chromeos snapshot
 ```
 
-If both succeed without another Connect page, the session is ready.
+Success without another Connect page proves the shared session is ready.
+
+## Do not retry stale relay pages
+
+These Chrome messages identify an old or malformed handoff:
+
+- `Missing mcpRelayUrl parameter in URL`
+- `Failed to connect to MCP relay: WebSocket error`
+
+Do not ask the user to retry that page or reuse the clipboard value. Close or ignore
+the stale page, run `status`, and inspect logs. If disconnected, run:
+
+```bash
+ai-browser-control-chromeos reconnect
+```
+
+Ask the user to use only the single newest handoff tab. The runtime validates
+`mcpRelayUrl` before opening Chrome, so a newly generated bare extension URL fails
+locally rather than wasting a browser attempt.
 
 ## Operate the browser
 
-Use concise browser-control commands and refs from the latest snapshot:
+Use refs from the latest snapshot:
 
 ```bash
 ai-browser-control-chromeos goto https://example.com
-ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos snapshot --depth=3
 ai-browser-control-chromeos find "Account"
 ai-browser-control-chromeos click e12
 ai-browser-control-chromeos fill e19 "text"
@@ -144,69 +138,48 @@ ai-browser-control-chromeos tab-list
 ai-browser-control-chromeos tab-select 1
 ```
 
-Prefer `find` or a shallow `snapshot --depth=N` before requesting a large snapshot.
-After navigation or a meaningful DOM change, refresh the snapshot because refs can
-become stale.
+Prefer `find` or a shallow snapshot before requesting a large page tree. Refresh the
+snapshot after navigation or a meaningful DOM change because element refs can become
+stale.
 
-### Summarize feed posts
-
-For social media feeds (LinkedIn, etc.), extract a readable post summary instead of
-parsing the full snapshot:
+For social feeds, use the bundled extractor instead of parsing a full snapshot:
 
 ```bash
 ai-browser-control-chromeos eval "$(cat SKILL_ROOT/scripts/summarizeFeed.js)"
 ```
 
-This returns a JSON array of `{author, time, text, reactions, comments, reposts}`
-for up to 20 posts on the current page.
-
 ## Hand interactive login to the user
 
-1. Navigate to the login page.
-2. Tell the user the browser is ready for them to log in.
-3. Stop browser actions while they enter credentials or complete MFA.
-4. When the user says they are ready, run `snapshot` and continue in the same
-   session.
+Navigate to the login page, tell the user Chrome is ready, and pause browser actions.
+After the user confirms login or MFA is complete, run a new snapshot and continue in
+the same session.
 
-Never ask the user to send passwords, one-time codes, session cookies, or the
-extension token through chat.
+## Recover by state, not by repeated attempts
 
-## Respect browser authorization
+1. Run `status`.
+2. If connected, refresh with `tab-list` and `snapshot`; do not reconnect.
+3. If connecting, keep the existing supervisor and inspect its redacted log.
+4. If disconnected, run `reconnect` once and use only the newest handoff.
+5. If durable service startup exits 3, use one foreground terminal session.
+6. Run `doctor.sh` if the new supervisor exits or prerequisites may have changed.
+7. Use the targeted cleanup in the troubleshooting reference only when these checks
+   show stale processes.
 
-The attached browser may expose personal accounts and authenticated services. Treat
-navigation and reading as scoped to the user's request. Obtain whatever approval the
-agent's governing instructions require before purchases, messages, deletions,
-publishing, account changes, or other consequential writes.
+Use `connect --persistent` only for explicitly continuous monitoring. It recreates a
+handoff after a real session disconnect, which is undesirable for ordinary tasks.
 
-## Recover without unnecessary reconnection
+## Authorization and finish
 
-When an action fails:
+The attached browser has the user's signed-in access. Stay within the requested
+scope and obtain whatever approval the governing instructions require before
+purchases, messages, deletions, publishing, account changes, or other consequential
+writes.
 
-1. Run `ai-browser-control-chromeos status`.
-2. If the session is open, retry with a new snapshot rather than reconnecting.
-3. If the session is closed, try `ai-browser-control-chromeos reconnect` (kills stale supervisor, starts fresh).
-4. If the new background process disappears between tool calls, start
-   `ai-browser-control-chromeos connect-foreground --persistent` in a long-lived
-   terminal tool session.
-5. If multiple old Playwright daemons or handoff tabs remain, follow the targeted
-   daemon cleanup in the troubleshooting reference once, then start one foreground
-   supervisor.
-6. If reconnect fails, check `SKILL_ROOT/scripts/doctor.sh`.
-7. If disconnected, run the appropriate connection command yourself and ask the
-   user only for the Chrome UI handoff.
-
-For `ERR_BLOCKED_BY_CLIENT`, use the local handoff page; do not click or open its
-extension URL as a normal HTTP link. For stale or mismatched sessions, follow the
-targeted cleanup steps in the troubleshooting reference.
-
-## Finish
-
-Leave the named session open when the user expects more browser work. Detach only
-when the user asks to end control or when security requires it:
+Leave the session open when more browser work is expected. Otherwise run:
 
 ```bash
 ai-browser-control-chromeos disconnect
 ```
 
-Report the page title and URL that demonstrate the requested outcome, without
-including tokens, cookies, or other secrets.
+Report the final page title and URL without exposing tokens, cookies, or other
+secrets.

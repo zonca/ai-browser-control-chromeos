@@ -24,6 +24,14 @@ command -v python3 >/dev/null 2>&1 && pass "Python $(python3 --version 2>&1)" ||
 command -v garcon-url-handler >/dev/null 2>&1 && pass 'ChromeOS garcon-url-handler found' || warn 'garcon-url-handler not found'
 [[ -d /mnt/chromeos ]] && pass 'ChromeOS mount detected' || warn '/mnt/chromeos not detected'
 
+if command -v systemctl >/dev/null 2>&1 &&
+   command -v systemd-run >/dev/null 2>&1 &&
+   systemctl --user show-environment >/dev/null 2>&1; then
+  pass 'Durable user service supervision is available'
+else
+  warn 'User service supervision is unavailable; the agent must use connect-foreground'
+fi
+
 if command -v playwright-cli >/dev/null 2>&1; then
   pass "Browser engine CLI $(playwright-cli --version)"
 else

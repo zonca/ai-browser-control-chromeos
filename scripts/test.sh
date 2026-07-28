@@ -5,25 +5,40 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cache_dir="$(mktemp -d)"
 lifecycle_home="$cache_dir/home"
 lifecycle_state="$cache_dir/state"
-lifecycle_browser_state="$cache_dir/browser-state"
-lifecycle_attach_count="$cache_dir/attach-count"
 lifecycle_token_file="$cache_dir/extension-token"
 lifecycle_cli="$cache_dir/playwright-cli"
+lifecycle_session="test-${BASHPID}"
+lifecycle_pid_file="$lifecycle_state/connect-${lifecycle_session}.pid"
+lifecycle_log_file="$lifecycle_state/connect-${lifecycle_session}.log"
+lifecycle_browser_state="$lifecycle_state/fake-browser-state"
+lifecycle_attach_count="$lifecycle_state/fake-attach-count"
+lifecycle_attach_delay="$lifecycle_state/fake-attach-delay"
+lifecycle_unit="ai-browser-control-chromeos-${UID}-${lifecycle_session}.service"
 
 cleanup() {
   HOME="$lifecycle_home" \
     AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE="$lifecycle_token_file" \
+    AI_BROWSER_CONTROL_CHROMEOS_SESSION="$lifecycle_session" \
     AI_BROWSER_CONTROL_CHROMEOS_CLI="$lifecycle_cli" \
     AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=/bin/true \
     AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR="$lifecycle_state" \
-    AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=0.1 \
-    AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.1 \
-    FAKE_BROWSER_STATE="$lifecycle_browser_state" \
-    FAKE_ATTACH_COUNT="$lifecycle_attach_count" \
+    AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=0.05 \
+    AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.05 \
     "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null 2>&1 || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop "$lifecycle_unit" >/dev/null 2>&1 || true
+    systemctl --user reset-failed "$lifecycle_unit" >/dev/null 2>&1 || true
+  fi
   rm -rf "$cache_dir"
 }
 trap cleanup EXIT
+
+chmod 700 \
+  "$root/bin/ai-browser-control-chromeos" \
+  "$root/bin/ai-browser-control-chromeos-connect" \
+  "$root/scripts/setup.sh" \
+  "$root/scripts/doctor.sh" \
+  "$root/scripts/test.sh"
 
 bash -n \
   "$root/bin/ai-browser-control-chromeos" \
@@ -40,9 +55,9 @@ python3 -m json.tool "$root/evals/evals.json" >/dev/null
 python3 - "$root" <<'PY'
 from __future__ import annotations
 
-import pathlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import pathlib
 import re
 import sys
 
@@ -75,8 +90,15 @@ page = helper.build_page(
     f"chrome-extension://{helper.EXTENSION_ID}/connect.html?ws=127.0.0.1",
     helper.DEFAULT_HANDOFF_TIMEOUT_SECONDS,
 ).decode()
-if 'id="countdown">180</span>' not in page or "const timeout = 180;" not in page:
-    raise SystemExit("The handoff page countdown does not match its 180-second deadline")
+for expected in (
+    "Copy browser connection address",
+    "navigator.clipboard.writeText(connectionUrl)",
+    "fetch('/copied'",
+):
+    if expected not in page:
+        raise SystemExit(f"The handoff page is missing: {expected}")
+if "Session expires" in page or "countdown" in page:
+    raise SystemExit("The handoff page still claims the relay expires on a UI timer")
 PY
 
 "$root/scripts/setup.sh" --help >/dev/null
@@ -84,32 +106,71 @@ PY
 fake_bin="$cache_dir/fake-bin"
 mkdir -p "$fake_bin"
 cat >"$fake_bin/xdg-open" <<'SH'
-#!/bin/sh
-exit 0
+#!/usr/bin/env bash
+set -euo pipefail
+python3 - "$1" <<'PY'
+import sys
+import urllib.request
+
+url = sys.argv[1]
+with urllib.request.urlopen(url, timeout=2) as response:
+    if response.status != 200:
+        raise SystemExit("handoff page did not return HTTP 200")
+request = urllib.request.Request(f"{url}copied", method="POST")
+with urllib.request.urlopen(request, timeout=2) as response:
+    if response.status != 204:
+        raise SystemExit("handoff completion did not return HTTP 204")
+PY
 SH
 chmod 700 "$fake_bin/xdg-open"
-timeout 4 env \
-  PATH="$fake_bin" \
-  AI_BROWSER_CONTROL_CHROMEOS_HANDOFF_TIMEOUT=1 \
+handoff_pid_file="$cache_dir/handoff.pid"
+timeout 5 env \
+  PATH="$fake_bin:/usr/bin:/bin" \
+  AI_BROWSER_CONTROL_CHROMEOS_HANDOFF_TIMEOUT=3 \
+  AI_BROWSER_CONTROL_CHROMEOS_HANDOFF_PID_FILE="$handoff_pid_file" \
   /usr/bin/python3 "$root/bin/ai-browser-control-chromeos-connect" \
-  "chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html?ws=127.0.0.1"
+  "chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html?mcpRelayUrl=ws%3A%2F%2F127.0.0.1%2Fextension%2Ftest"
+[[ ! -e "$handoff_pid_file" ]]
 
-mkdir -p "$lifecycle_home"
+set +e
+missing_relay_output="$(
+  /usr/bin/python3 "$root/bin/ai-browser-control-chromeos-connect" \
+    "chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html" 2>&1
+)"
+missing_relay_status=$?
+set -e
+[[ $missing_relay_status -ne 0 ]]
+[[ "$missing_relay_output" == *'missing one mcpRelayUrl'* ]]
+
+mkdir -p "$lifecycle_home" "$lifecycle_state"
 printf '%s\n' 'test-token-not-secret' >"$lifecycle_token_file"
 chmod 600 "$lifecycle_token_file"
+printf '%s\n' '0.2' >"$lifecycle_attach_delay"
 
 cat >"$lifecycle_cli" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 
+session="${1#-s=}"
 shift
 command="${1:-}"
+browser_state="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-browser-state"
+attach_count="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-count"
+attach_delay="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-delay"
+trace="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-trace"
+
 case "$command" in
   list)
-    if [[ -r "$FAKE_BROWSER_STATE" ]]; then
+    if [[ -r "$browser_state" ]]; then
+      trace_state=present
+    else
+      trace_state=absent
+    fi
+    printf '%s pid=%s list state=%s\n' "$(date +%s.%N)" "$$" "$trace_state" >>"$trace"
+    if [[ -r "$browser_state" ]]; then
       printf '%s\n' \
         '### Browsers' \
-        '- chromeos:' \
+        "- $session:" \
         '  - status: open' \
         '  - browser-type: chrome (attached)'
     else
@@ -118,14 +179,19 @@ case "$command" in
     ;;
   attach)
     count=0
-    [[ ! -r "$FAKE_ATTACH_COUNT" ]] || count="$(<"$FAKE_ATTACH_COUNT")"
-    printf '%s\n' "$((count + 1))" >"$FAKE_ATTACH_COUNT"
-    sleep "${FAKE_ATTACH_DELAY:-3}"
-    printf '%s\n' 'open' >"$FAKE_BROWSER_STATE"
+    [[ ! -r "$attach_count" ]] || count="$(<"$attach_count")"
+    printf '%s\n' "$((count + 1))" >"$attach_count"
+    printf '%s pid=%s ppid=%s attach-start count=%s\n' \
+      "$(date +%s.%N)" "$$" "$PPID" "$((count + 1))" >>"$trace"
+    sleep "$(<"$attach_delay")"
+    printf '%s\n' 'open' >"$browser_state"
+    printf '%s pid=%s ppid=%s attach-open count=%s\n' \
+      "$(date +%s.%N)" "$$" "$PPID" "$((count + 1))" >>"$trace"
     printf 'relay token: %s\n' "$PLAYWRIGHT_MCP_EXTENSION_TOKEN"
     ;;
   detach)
-    rm -f "$FAKE_BROWSER_STATE"
+    printf '%s pid=%s detach\n' "$(date +%s.%N)" "$$" >>"$trace"
+    rm -f "$browser_state"
     ;;
   *)
     printf 'unsupported fake command: %s\n' "$command" >&2
@@ -138,14 +204,12 @@ chmod 700 "$lifecycle_cli"
 lifecycle_env=(
   HOME="$lifecycle_home"
   AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE="$lifecycle_token_file"
+  AI_BROWSER_CONTROL_CHROMEOS_SESSION="$lifecycle_session"
   AI_BROWSER_CONTROL_CHROMEOS_CLI="$lifecycle_cli"
   AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=/bin/true
   AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR="$lifecycle_state"
-  AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=0.1
-  AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.1
-  FAKE_BROWSER_STATE="$lifecycle_browser_state"
-  FAKE_ATTACH_COUNT="$lifecycle_attach_count"
-  FAKE_ATTACH_DELAY=3
+  AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL=0.05
+  AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.05
 )
 
 set +e
@@ -153,89 +217,154 @@ invalid_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chrome
 invalid_status=$?
 set -e
 [[ $invalid_status -eq 2 ]]
-[[ "$invalid_output" == *'Unsupported connect argument: --persistant'* ]]
-[[ ! -e "$lifecycle_state/connect-chromeos.pid" ]]
+[[ "$invalid_output" == *'Unsupported connection argument: --persistant'* ]]
+[[ ! -e "$lifecycle_pid_file" ]]
 
-connect_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect)"
-[[ "$connect_output" == *'Background connection started'* ]]
-first_pid="$(<"$lifecycle_state/connect-chromeos.pid")"
-first_command="$(tr '\0' ' ' <"/proc/$first_pid/cmdline")"
-[[ "$first_command" != *'--persistent'* ]]
-connect_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect)"
-[[ "$connect_output" == *'Background connection is already running'* ]]
-[[ "$(<"$lifecycle_state/connect-chromeos.pid")" == "$first_pid" ]]
-env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
-status_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status)"
-[[ "$status_output" == connected:* ]]
-connect_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect)"
-[[ "$connect_output" == *'is already connected'* ]]
-log_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" logs 40)"
-[[ "$log_output" == *'[REDACTED]'* ]]
-[[ "$log_output" != *'test-token-not-secret'* ]]
-env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
-if env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status >/dev/null; then
-  printf '%s\n' 'Expected disconnected status to return nonzero.' >&2
-  exit 1
-fi
+set +e
+invalid_session_output="$(
+  env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SESSION='../bad' \
+    "$root/bin/ai-browser-control-chromeos" status 2>&1
+)"
+invalid_session_status=$?
+set -e
+[[ $invalid_session_status -eq 2 ]]
+[[ "$invalid_session_output" == *'Invalid session name'* ]]
+
+set +e
+foreground_required="$(
+  env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+    "$root/bin/ai-browser-control-chromeos" connect 2>&1
+)"
+foreground_required_status=$?
+set -e
+[[ $foreground_required_status -eq 3 ]]
+[[ "$foreground_required" == *'connect-foreground'* ]]
+[[ ! -e "$lifecycle_pid_file" ]]
 
 wait_for_attach_count() {
   local target="$1" count attempt
-  for ((attempt = 0; attempt < 100; attempt++)); do
+  for ((attempt = 0; attempt < 150; attempt++)); do
     count=0
     [[ ! -r "$lifecycle_attach_count" ]] || count="$(<"$lifecycle_attach_count")"
     if ((count >= target)) && [[ -r "$lifecycle_browser_state" ]]; then
       return 0
     fi
-    sleep 0.1
+    sleep 0.05
   done
   printf 'Timed out waiting for fake attach count %s.\n' "$target" >&2
-  tail -n 40 "$lifecycle_state/connect-chromeos.log" >&2 || true
-  if [[ -r "$lifecycle_state/connect-chromeos.pid" ]]; then
-    ps -o pid,ppid,state,args -p "$(<"$lifecycle_state/connect-chromeos.pid")" >&2 || true
+  printf 'Observed attach count: %s; browser state: %s.\n' \
+    "$count" "$([[ -r "$lifecycle_browser_state" ]] && printf present || printf absent)" >&2
+  tail -n 40 "$lifecycle_log_file" >&2 || true
+  rg 'attach|detach|state=absent' "$lifecycle_state/fake-trace" >&2 || true
+  for process_environ in /proc/[0-9]*/environ; do
+    process_pid="${process_environ#/proc/}"
+    process_pid="${process_pid%/environ}"
+    [[ -r "$process_environ" ]] || continue
+    grep -zFxq "AI_BROWSER_CONTROL_CHROMEOS_SESSION=$lifecycle_session" \
+      "$process_environ" 2>/dev/null || continue
+    ps -o pid,ppid,state,etime,args -p "$process_pid" >&2 || true
+  done
+  if [[ "$systemd_usable" == true ]]; then
+    systemctl --user status "$lifecycle_unit" --no-pager >&2 || true
+    journalctl --user-unit "$lifecycle_unit" --no-pager -n 80 >&2 || true
   fi
   return 1
 }
 
-persistent_env=("${lifecycle_env[@]}" FAKE_ATTACH_DELAY=0.1)
-connect_output="$(env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" connect --persistent)"
-[[ "$connect_output" == *'Background connection started'* ]]
-persistent_pid="$(<"$lifecycle_state/connect-chromeos.pid")"
-persistent_command="$(tr '\0' ' ' <"/proc/$persistent_pid/cmdline")"
-[[ "$persistent_command" == *'--persistent'* ]]
-wait_for_attach_count 2
-rm -f "$lifecycle_browser_state"
-wait_for_attach_count 3
-rm -f "$lifecycle_browser_state"
-wait_for_attach_count 4
-env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+systemd_usable=false
+if command -v systemctl >/dev/null 2>&1 &&
+   command -v systemd-run >/dev/null 2>&1 &&
+   systemctl --user show-environment >/dev/null 2>&1; then
+  systemd_usable=true
+fi
+
+if [[ "$systemd_usable" == true ]]; then
+  connect_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect)"
+  [[ "$connect_output" == *'Durable connection service started'* ]]
+  first_pid="$(systemctl --user show "$lifecycle_unit" -p MainPID --value)"
+  [[ "$first_pid" =~ ^[1-9][0-9]*$ ]]
+  [[ "$(<"$lifecycle_pid_file")" == "$first_pid" ]]
+  first_parent="$(ps -o ppid= -p "$first_pid" | tr -d ' ')"
+  [[ "$first_parent" != "$$" ]]
+
+  connect_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect)"
+  [[ "$connect_output" == *'Connection supervisor is already running'* ||
+     "$connect_output" == *'is already connected'* ]]
+  [[ "$(systemctl --user show "$lifecycle_unit" -p MainPID --value)" == "$first_pid" ]]
+
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+  status_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status)"
+  [[ "$status_output" == connected:* ]]
+  log_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" logs 40)"
+  [[ "$log_output" == *'[REDACTED]'* ]]
+  [[ "$log_output" != *'test-token-not-secret'* ]]
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+
+  if env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status >/dev/null; then
+    printf '%s\n' 'Expected disconnected status to return nonzero.' >&2
+    exit 1
+  fi
+
+  # Repeated cross-process starts prove that the user service owns the supervisor,
+  # not the short-lived shell that invoked connect.
+  printf '%s\n' '0.05' >"$lifecycle_attach_delay"
+  for _ in {1..5}; do
+    env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect >/dev/null
+    env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+    env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+  done
+
+  count_before=0
+  [[ ! -r "$lifecycle_attach_count" ]] || count_before="$(<"$lifecycle_attach_count")"
+  connect_output="$(
+    env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect --persistent
+  )"
+  [[ "$connect_output" == *'Durable connection service started'* ]]
+  persistent_pid="$(systemctl --user show "$lifecycle_unit" -p MainPID --value)"
+  persistent_command="$(tr '\0' ' ' <"/proc/$persistent_pid/cmdline")"
+  [[ "$persistent_command" == *'__connect-supervisor --persistent'* ]]
+  wait_for_attach_count "$((count_before + 1))" || exit 1
+  rm -f "$lifecycle_browser_state"
+  wait_for_attach_count "$((count_before + 2))" || exit 1
+  rm -f "$lifecycle_browser_state"
+  wait_for_attach_count "$((count_before + 3))" || exit 1
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+else
+  printf '%s\n' 'SKIP  durable systemd integration (user service manager unavailable)'
+fi
 
 rm -f "$lifecycle_browser_state"
+printf '%s\n' '0.05' >"$lifecycle_attach_delay"
+count_before=0
+[[ ! -r "$lifecycle_attach_count" ]] || count_before="$(<"$lifecycle_attach_count")"
 foreground_log="$cache_dir/foreground.log"
-env "${persistent_env[@]}" \
+env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" connect-foreground --persistent \
   >"$foreground_log" 2>&1 &
 foreground_pid=$!
-for ((attempt = 0; attempt < 50; attempt++)); do
-  [[ -r "$lifecycle_state/connect-chromeos.pid" ]] && break
-  sleep 0.1
+for _ in {1..50}; do
+  [[ -r "$lifecycle_pid_file" ]] && break
+  sleep 0.05
 done
-[[ "$(<"$lifecycle_state/connect-chromeos.pid")" == "$foreground_pid" ]]
-foreground_command="$(tr '\0' ' ' <"/proc/$foreground_pid/cmdline")"
-[[ "$foreground_command" == *'connect-foreground --persistent'* ]]
+[[ "$(<"$lifecycle_pid_file")" == "$foreground_pid" ]]
 set +e
-status_output="$(env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" status)"
+status_output="$(
+  env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+    "$root/bin/ai-browser-control-chromeos" status
+)"
 status_code=$?
 set -e
 [[ $status_code -eq 2 || $status_code -eq 0 ]]
 [[ "$status_output" == connecting:* || "$status_output" == connected:* ]]
-wait_for_attach_count 5
-env "${persistent_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
-for ((attempt = 0; attempt < 50; attempt++)); do
+wait_for_attach_count "$((count_before + 1))" || exit 1
+env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+  "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+for _ in {1..50}; do
   ! kill -0 "$foreground_pid" 2>/dev/null && break
-  sleep 0.1
+  sleep 0.05
 done
 ! kill -0 "$foreground_pid" 2>/dev/null
-[[ "$(cat "$foreground_log")" == *'Foreground connection supervisor started'* ]]
+[[ "$(cat "$foreground_log")" == *'Foreground connection supervisor starting'* ]]
 
 snapshot_file="$cache_dir/feed-snapshot.yml"
 cat >"$snapshot_file" <<'YAML'

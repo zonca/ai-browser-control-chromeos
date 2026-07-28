@@ -26,11 +26,12 @@ AI agent -> ai-browser-control-chromeos -> named browser-control daemon
                          existing ChromeOS Chrome profile
 ```
 
-The agent runs `connect`, which launches a supervised connection process in the
-background and returns immediately. A small local page opens in Chrome. The user
-clicks Copy, pastes the generated extension address into Chrome's address bar, and
-presses Enter. The agent polls connection status and continues automatically. Later
-commands reuse the named daemon without another Connect tab.
+The agent runs `connect`, which launches the relay under Crostini's user service
+manager and returns immediately. The service survives the short terminal call that
+started it. A small local page opens in Chrome. The user clicks Copy, pastes the
+generated extension address into Chrome's address bar, and presses Enter. The agent
+polls connection status and continues automatically. Later commands reuse the named
+daemon without another Connect tab.
 
 ## Requirements
 
@@ -38,6 +39,8 @@ commands reuse the named daemon without another Connect tab.
 - ChromeOS Chrome, not a separate Linux Chrome profile.
 - Node.js 18 or newer and npm inside the Linux environment.
 - Python 3 and `garcon-url-handler` inside Crostini.
+- A working systemd user manager for durable background supervision. Environments
+  without one can use the agent-managed foreground fallback.
 - The official [Playwright Extension for Chrome](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm).
 
 The setup script installs `@playwright/cli` globally. It does not use `npx` during
@@ -87,8 +90,8 @@ PLAYWRIGHT_MCP_EXTENSION_TOKEN="..." ./scripts/setup.sh
 
 ## How an agent should ask for prerequisites
 
-The agent owns all terminal work: diagnostics, installation, setup, background
-processes, status polling, browser commands, logs, and cleanup. The user only handles
+The agent owns all terminal work: diagnostics, installation, setup, connection
+services, status polling, browser commands, logs, and cleanup. The user only handles
 actions that cannot safely be automated: installing the Chrome extension, entering
 its token privately, interactive login/MFA, and approving consequential actions.
 
@@ -109,7 +112,7 @@ When the connection page opens, ask:
 > Click **Copy browser connection address**, then press **Ctrl+L**, **Ctrl+V**,
 > and **Enter**. Tell me when the extension page says it is connected.
 
-After that, the agent polls the background connection and continues. It must not ask
+After that, the agent polls the connection service and continues. It must not ask
 the user to run a terminal command.
 
 ## Use
@@ -120,14 +123,15 @@ The agent checks the shared session first:
 ai-browser-control-chromeos status
 ```
 
-If disconnected, the agent starts the connection in the background:
+If disconnected, the agent starts one durable connection:
 
 ```bash
 ai-browser-control-chromeos connect
 ```
 
-This returns immediately with a supervisor PID and redacted log path. The agent asks
-the user to complete the Chrome address-bar handoff, then checks or waits:
+This returns immediately with a user-service PID and redacted log path. The agent
+asks the user to use only the newest local handoff tab, complete the Chrome
+address-bar handoff, then checks or waits:
 
 ```bash
 ai-browser-control-chromeos status
@@ -138,22 +142,28 @@ ai-browser-control-chromeos logs 40
 The user never needs to start, monitor, or stop a terminal process.
 
 `status` uses automation-friendly exit codes: `0` when connected, `2` while the
-background process is connecting, and `1` when disconnected. `wait` returns `124`
+connection service is waiting, and `1` when disconnected. `wait` returns `124`
 on timeout. Connection logs are token-redacted and stored under
 `~/.local/state/ai-browser-control-chromeos/`.
 
-Some agent hosts remove detached child processes after a terminal call finishes. If
-the supervisor immediately disappears, the agent starts a foreground supervisor in
-a long-lived terminal tool session:
+If a host does not expose a working user service manager, `connect` exits 3 instead
+of claiming that a disposable background child started. The agent then starts a
+foreground supervisor in one long-lived terminal tool session:
 
 ```bash
-ai-browser-control-chromeos connect-foreground --persistent
+ai-browser-control-chromeos connect-foreground
 ```
 
-The agent keeps that tool session alive and uses separate commands for `status`,
-`wait`, and browser actions. The user still performs only the Chrome address-bar
-handoff. Foreground mode writes the same PID and redacted log files as background
-mode, so monitoring and cleanup commands remain unchanged.
+The agent keeps that tool session alive and uses separate calls for `status`, `wait`,
+and browser actions. The user still performs only the Chrome address-bar handoff.
+Foreground mode writes the same PID and redacted log files as service mode, so
+monitoring and cleanup commands remain unchanged.
+
+If Chrome shows `Missing mcpRelayUrl parameter in URL` or `Failed to connect to MCP
+relay: WebSocket error`, that page belongs to a malformed or stopped relay. Do not
+retry it. The agent checks status, reconnects once if needed, and tells the user to
+use only the newest handoff tab. The handoff helper validates `mcpRelayUrl` before it
+opens Chrome.
 
 Then use the browser-control commands:
 
@@ -191,7 +201,9 @@ ai-browser-control-chromeos disconnect
 
 Do not call `connect` before every action. First run `status` and reuse an open or
 currently connecting session. `connect` is idempotent: it reports the existing
-connection or supervisor rather than starting a duplicate.
+connection or supervisor rather than starting a duplicate. It also cleans up only
+processes belonging to the selected session; it does not globally kill helpers for
+other sessions.
 
 ## Diagnostics
 
