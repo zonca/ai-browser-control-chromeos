@@ -11,6 +11,7 @@ reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
 attach_ready_timeout="${AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT:-10}"
 disconnect_misses="${AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES:-3}"
 supervisor_mode="${AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR:-auto}"
+client_name="${AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME:-AI Browser Control}"
 self="$(readlink -f "$0")"
 
 if [[ ! "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
@@ -240,6 +241,7 @@ start_systemd_connection() {
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=$attach_ready_timeout"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=$disconnect_misses"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=systemd"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME=$client_name"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLI=$playwright_cli"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=$connect_helper"
   )

@@ -12,17 +12,25 @@ import socketserver
 import subprocess
 import sys
 import threading
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 
 EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm"
 DEFAULT_HANDOFF_TIMEOUT_SECONDS = 300
+DEFAULT_CLIENT_NAME = "AI Browser Control"
 
 
-def connection_url_from_argv() -> str:
-    if len(sys.argv) < 2:
-        raise SystemExit("The browser engine did not provide an extension connection URL")
-    connection_url = sys.argv[-1]
+def configured_client_name() -> str:
+    name = os.environ.get(
+        "AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME",
+        DEFAULT_CLIENT_NAME,
+    ).strip()
+    if not name or len(name) > 64 or any(ord(character) < 32 for character in name):
+        raise SystemExit("The browser-control client name must be 1-64 printable characters")
+    return name
+
+
+def normalize_connection_url(connection_url: str) -> str:
     parsed = urlparse(connection_url)
     if (
         parsed.scheme != "chrome-extension"
@@ -37,7 +45,25 @@ def connection_url_from_argv() -> str:
     relay = urlparse(relay_values[0])
     if relay.scheme not in {"ws", "wss"} or not relay.netloc:
         raise SystemExit("The extension connection URL contains an invalid mcpRelayUrl")
-    return connection_url
+
+    query_pairs = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name != "client"
+    ]
+    query_pairs.append(
+        (
+            "client",
+            json.dumps({"name": configured_client_name()}, separators=(",", ":")),
+        )
+    )
+    return urlunparse(parsed._replace(query=urlencode(query_pairs)))
+
+
+def connection_url_from_argv() -> str:
+    if len(sys.argv) < 2:
+        raise SystemExit("The browser engine did not provide an extension connection URL")
+    return normalize_connection_url(sys.argv[-1])
 
 
 def opener() -> str:

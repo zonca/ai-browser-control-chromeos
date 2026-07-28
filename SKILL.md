@@ -26,23 +26,66 @@ absolute path because the user's working directory may be an unrelated repositor
 
 Read [README.md](README.md) for installation or architecture questions. Read
 [references/troubleshooting.md](references/troubleshooting.md) only after the normal
-connection path fails.
+connection path fails. Read
+[references/agent-runbook.md](references/agent-runbook.md) when exact command exit
+codes, environment settings, or recovery branches are needed.
 
-## Start every browser task with discovery
+## Follow this connection algorithm
 
-Run:
+Use the same session name for every command in one browser-control task. The default
+is `chromeos`; do not set an environment override unless isolation is genuinely
+needed.
+
+1. Run discovery before any setup or connection command:
 
 ```bash
 ai-browser-control-chromeos status
 ```
 
-Interpret the result:
+2. Branch on the status exit code:
 
 - Exit 0, `connected`: reuse the session; do not call `connect`.
-- Exit 2, `connecting`: keep the existing service and wait; do not open another relay.
+- Exit 2, `connecting`: keep the existing supervisor and run `wait 180`; do not call
+  `connect` or open another relay.
 - Exit 1, `disconnected`: start one connection.
 - Missing command or prerequisite error: run `SKILL_ROOT/scripts/doctor.sh` and fix
   only what it reports.
+
+3. Only when disconnected, run:
+
+```bash
+ai-browser-control-chromeos connect
+```
+
+Treat its exit codes as a contract:
+
+- Exit 0: a durable service started or an existing session/supervisor was reused.
+- Exit 3: the host cannot provide background supervision. Start
+  `connect-foreground` in one long-lived terminal tool session, retain that tool's
+  session ID, and keep it alive while other tool calls run.
+- Any other nonzero exit: inspect `logs 40`, then run the doctor. Do not hide the
+  failure with shell backgrounding.
+
+The exact foreground fallback command is:
+
+```bash
+ai-browser-control-chromeos connect-foreground
+```
+
+4. If a new handoff page opens, give the Chrome instruction below exactly once.
+5. Run `wait 180`.
+6. Verify the connection from two separate terminal invocations:
+
+```bash
+ai-browser-control-chromeos tab-list
+ai-browser-control-chromeos snapshot
+```
+
+Both commands must succeed without another Connect page. This cross-process check
+proves that later agent calls can reuse the durable session.
+
+Do not invoke raw `playwright-cli attach`, append `&`, use `nohup`, or repeatedly
+call `connect`. Those patterns bypass supervision or create stale handoffs.
 
 ## Set up a new Chromebook
 
@@ -54,30 +97,9 @@ SKILL_ROOT/scripts/setup.sh
 
 The setup stores the token outside the repository with mode `600`. Pause at its
 hidden prompt so the user can type the token privately. Do not request the token in
-chat. After setup, rerun the doctor and continue with the normal connection path.
+chat. After setup, rerun the doctor and return to the connection algorithm.
 
-## Create one durable connection
-
-Run:
-
-```bash
-ai-browser-control-chromeos connect
-```
-
-On Crostini this starts a user service, so the Playwright relay survives after the
-agent's short terminal call exits. `connect` is idempotent and reports an existing
-session or supervisor instead of creating another handoff.
-
-If `connect` exits 3 because durable user services are unavailable, immediately
-start this in a long-lived terminal tool call:
-
-```bash
-ai-browser-control-chromeos connect-foreground
-```
-
-Let the terminal tool yield a live session ID. Keep that tool session open and use
-separate calls for status and browser actions. This is a host fallback, not a step
-for the user.
+## Complete the Chrome handoff
 
 When the newest local page titled **Connect AI agent to Chrome** appears, tell the
 user:
@@ -92,18 +114,11 @@ Then run:
 ai-browser-control-chromeos wait 180
 ```
 
-Use `status` periodically instead when the agent runtime needs short responsive
-calls. If waiting fails, inspect `ai-browser-control-chromeos logs 40`; logs redact
-the extension token.
-
-Verify reuse with two separate commands:
-
-```bash
-ai-browser-control-chromeos tab-list
-ai-browser-control-chromeos snapshot
-```
-
-Success without another Connect page proves the shared session is ready.
+`wait` exits 0 when connected, 1 if the supervisor stops, 2 for invalid input, and
+124 on timeout. Use `status` periodically instead when the agent runtime needs short
+responsive calls. On failure, inspect `ai-browser-control-chromeos logs 40`; logs
+redact the extension token. Return to the status branch instead of blindly creating
+another relay.
 
 ## Do not retry stale relay pages
 

@@ -60,6 +60,7 @@ from importlib.machinery import SourceFileLoader
 import pathlib
 import re
 import sys
+from urllib.parse import unquote_plus
 
 root = pathlib.Path(sys.argv[1])
 skill = (root / "SKILL.md").read_text()
@@ -70,14 +71,50 @@ for field in ("name:", "description:"):
     if field not in frontmatter:
         raise SystemExit(f"SKILL.md frontmatter is missing {field}")
 
-for markdown_file in (root / "README.md", root / "SKILL.md"):
+for markdown_file in sorted(root.rglob("*.md")):
     text = markdown_file.read_text()
     for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
         if "://" in target or target.startswith("#"):
             continue
         path = (markdown_file.parent / target.split("#", 1)[0]).resolve()
         if not path.exists():
-            raise SystemExit(f"Broken relative link in {markdown_file.name}: {target}")
+            raise SystemExit(
+                f"Broken relative link in {markdown_file.relative_to(root)}: {target}"
+            )
+
+runbook = (root / "references" / "agent-runbook.md").read_text()
+documentation_contract = {
+    "SKILL.md": (
+        "ai-browser-control-chromeos status",
+        "Exit 2, `connecting`",
+        "ai-browser-control-chromeos connect-foreground",
+        "ai-browser-control-chromeos wait 180",
+        "ai-browser-control-chromeos tab-list",
+        "ai-browser-control-chromeos snapshot",
+        "Missing mcpRelayUrl parameter in URL",
+        "Failed to connect to MCP relay: WebSocket error",
+        "Do not invoke raw `playwright-cli attach`",
+        "references/agent-runbook.md",
+    ),
+    "references/agent-runbook.md": (
+        "Deterministic start sequence",
+        "Cross-process verification",
+        "Run both commands as separate terminal invocations",
+        "Exit 3",
+        "Exit 124",
+        "keep the existing supervisor",
+        "rerun `status`, and connect once only if now disconnected",
+        "AI_BROWSER_CONTROL_CHROMEOS_SESSION=research",
+        "Never substitute raw `playwright-cli attach`",
+    ),
+}
+documents = {"SKILL.md": skill, "references/agent-runbook.md": runbook}
+for document, requirements in documentation_contract.items():
+    for requirement in requirements:
+        if requirement not in documents[document]:
+            raise SystemExit(
+                f"{document} is missing required agent guidance: {requirement}"
+            )
 
 helper_path = root / "bin" / "ai-browser-control-chromeos-connect"
 loader = SourceFileLoader("chromeos_handoff", str(helper_path))
@@ -86,10 +123,18 @@ if spec is None or spec.loader is None:
     raise SystemExit("Could not load the ChromeOS handoff helper")
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
-page = helper.build_page(
-    f"chrome-extension://{helper.EXTENSION_ID}/connect.html?ws=127.0.0.1",
-    helper.DEFAULT_HANDOFF_TIMEOUT_SECONDS,
-).decode()
+normalized_url = helper.normalize_connection_url(
+    f"chrome-extension://{helper.EXTENSION_ID}/connect.html"
+    "?mcpRelayUrl=ws%3A%2F%2F127.0.0.1%2Fextension%2Ftest"
+    "&client=%7B%22name%22%3A%22playwright-cli%22%7D"
+)
+normalized_client = re.search(r"[?&]client=([^&]+)", normalized_url)
+if normalized_client is None:
+    raise SystemExit("The normalized connection URL is missing the client label")
+if '"name":"AI Browser Control"' not in unquote_plus(normalized_client.group(1)):
+    raise SystemExit("The connection URL does not label the browser-control client")
+
+page = helper.build_page(normalized_url, helper.DEFAULT_HANDOFF_TIMEOUT_SECONDS).decode()
 for expected in (
     "Copy browser connection address",
     "navigator.clipboard.writeText(connectionUrl)",

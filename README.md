@@ -31,7 +31,8 @@ manager and returns immediately. The service survives the short terminal call th
 started it. A small local page opens in Chrome. The user clicks Copy, pastes the
 generated extension address into Chrome's address bar, and presses Enter. The agent
 polls connection status and continues automatically. Later commands reuse the named
-daemon without another Connect tab.
+daemon without another Connect tab. The handoff identifies itself as
+`AI Browser Control` instead of a generic Playwright client.
 
 ## Requirements
 
@@ -116,6 +117,10 @@ After that, the agent polls the connection service and continues. It must not as
 the user to run a terminal command.
 
 ## Use
+
+Agents should follow the deterministic
+[agent runbook](references/agent-runbook.md). The short version is to inspect state,
+branch once, and verify reuse across separate terminal calls.
 
 The agent checks the shared session first:
 
@@ -209,6 +214,10 @@ currently connecting session. `connect` is idempotent: it reports the existing
 connection or supervisor rather than starting a duplicate. It also cleans up only
 processes belonging to the selected session; it does not globally kill helpers for
 other sessions.
+
+Do not replace the wrapper with raw `playwright-cli attach`, `nohup`, or shell `&`.
+Those patterns bypass the lifecycle guarantees and can leave Chrome with a stopped
+relay address.
 
 ## Diagnostics
 

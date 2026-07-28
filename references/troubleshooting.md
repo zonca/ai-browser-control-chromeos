@@ -1,7 +1,8 @@
 # Troubleshooting
 
 Read this only after the normal discovery and single-connection workflow in
-`SKILL.md` fails.
+[`SKILL.md`](../SKILL.md) fails. For exact state and exit-code handling, use the
+[agent runbook](agent-runbook.md).
 
 ## Command or prerequisite is missing
 
@@ -39,6 +40,9 @@ ai-browser-control-chromeos status
 Repeated `connect` calls do not repair a currently connecting relay and create user
 confusion even when the runtime prevents duplicates.
 
+Do not invoke raw `playwright-cli attach`, `nohup`, or shell `&`. A relay started as
+a child of a short-lived agent shell can die as soon as that tool call returns.
+
 ## Bare or stale extension page
 
 Two common Chrome errors are:
@@ -63,6 +67,18 @@ ai-browser-control-chromeos reconnect
 Use only the newest page titled **Connect AI agent to Chrome**. Click its Copy
 button, then paste into Chrome's address bar. The helper now rejects a missing or
 invalid `mcpRelayUrl` before opening a handoff page.
+
+## Extension says `"unknown" connected`
+
+The handoff sends the client label `AI Browser Control`. Older extension releases
+can still display `unknown` after a token-authenticated automatic connection because
+of an upstream UI bug. This label does not indicate a transport failure; confirm the
+connection with `status`, `tab-list`, and `snapshot`.
+
+Update the official extension when the Chrome Web Store publishes the upstream
+[token-bypass client-name fix](https://github.com/microsoft/playwright/commit/e8b395b2b02eb93f20bb6a5c88a16b4296858f17).
+Do not remove the token merely to change the label, because doing so adds a manual
+approval step to every handoff.
 
 ## `ERR_BLOCKED_BY_CLIENT`
 
