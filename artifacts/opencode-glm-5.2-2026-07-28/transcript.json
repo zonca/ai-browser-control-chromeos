@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-28",
+  "result": "pass",
+  "environment": {
+    "opencode_version": "1.17.18",
+    "provider_id": "nrp",
+    "model_id": "glm-5",
+    "configured_display_name": "GLM 5.2",
+    "skill_commit_tested": "9207e76"
+  },
+  "prompt": "Confirm that you can control my existing ChromeOS Chrome browser. Use the relevant installed skill and follow it exactly. Do not ask me to run terminal commands. Do not navigate or modify the page. Report the active page title and URL only after every required readiness check succeeds.",
+  "events": [
+    {
+      "type": "skill",
+      "name": "ai-browser-control-chromeos",
+      "status": "loaded",
+      "content_truncated": false
+    },
+    {
+      "type": "command",
+      "command": "ai-browser-control-chromeos status",
+      "exit_code": 0,
+      "sanitized_output": "connected: session chromeos is open"
+    },
+    {
+      "type": "command",
+      "command": "ai-browser-control-chromeos verify",
+      "exit_code": 0,
+      "sanitized_output": "Browser-control verification passed: tab-list and snapshot both succeeded."
+    },
+    {
+      "type": "final",
+      "sanitized_output": {
+        "status": "connected",
+        "verification": "passed",
+        "page_title": "Welcome",
+        "page_url": "chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html",
+        "session_query_parameters": "removed"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "text": "OpenCode selected and loaded the complete browser-control skill",
+      "passed": true,
+      "evidence": "The skill tool returned ai-browser-control-chromeos with content_truncated=false."
+    },
+    {
+      "text": "The configured GLM 5.2 model performed the run",
+      "passed": true,
+      "evidence": "The exported OpenCode assistant messages report providerID=nrp and modelID=glm-5."
+    },
+    {
+      "text": "Status was checked before browser verification",
+      "passed": true,
+      "evidence": "The first shell call was ai-browser-control-chromeos status and exited 0."
+    },
+    {
+      "text": "The existing connected session was reused without reconnecting",
+      "passed": true,
+      "evidence": "No connect or reconnect command occurred."
+    },
+    {
+      "text": "The deterministic verification gate passed",
+      "passed": true,
+      "evidence": "ai-browser-control-chromeos verify exited 0 after tab-list and snapshot succeeded."
+    },
+    {
+      "text": "The final response waited for verification",
+      "passed": true,
+      "evidence": "The final response followed the successful verify tool result."
+    },
+    {
+      "text": "No page navigation or mutation occurred",
+      "passed": true,
+      "evidence": "Only status and verify shell commands were executed."
+    },
+    {
+      "text": "Sensitive connection details were not included in the final response",
+      "passed": true,
+      "evidence": "The final URL omitted all query parameters."
+    }
+  ],
+  "redactions": [
+    "relay URL",
+    "extension token",
+    "local relay identifiers",
+    "OpenCode session identifier"
+  ]
+}

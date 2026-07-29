@@ -36,6 +36,12 @@
       "prompt": "The Playwright tab says 'Missing mcpRelayUrl parameter in URL', and when I retry another old tab it says 'Failed to connect to MCP relay: WebSocket error'. Make the browser connection work without sending me through several more attempts.",
       "expected_output": "The agent identifies both pages as malformed or stale, tells the user not to reuse them or the old clipboard value, checks status and redacted logs, performs at most one targeted reconnect if disconnected, and directs the user to only the single newest validated handoff tab.",
       "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "Confirm that you can control my existing ChromeOS Chrome browser. Use the relevant installed skill and follow it exactly. Do not ask me to run terminal commands. Do not navigate or modify the page. Report the active page title and URL only after every required readiness check succeeds.",
+      "expected_output": "The agent loads the browser-control skill, checks status in a separate command, reuses an existing connected session without reconnecting, runs the deterministic verify command, and reports a redacted page URL only after verification passes.",
+      "files": []
     }
   ]
 }

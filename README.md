@@ -75,6 +75,28 @@ Use another agent skill directory when needed:
 Or set `AGENT_SKILLS_DIR` before running setup. Use `--no-skill-install` when only
 the browser command should be installed.
 
+### OpenCode
+
+OpenCode can auto-load skills from `~/.agents/skills`, but some releases do not
+follow a directory symlink created there. If `opencode debug skill` does not list
+`ai-browser-control-chromeos`, add the repository checkout as an explicit skill
+path in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "skills": {
+    "paths": ["/absolute/path/to/ai-browser-control-chromeos"]
+  }
+}
+```
+
+Merge this with the existing configuration instead of replacing other settings,
+then restart OpenCode. Verify discovery with:
+
+```bash
+opencode debug skill | grep ai-browser-control-chromeos
+```
+
 ### The extension token
 
 Install the Playwright extension, open its connection screen, and copy the token
@@ -240,6 +262,22 @@ Validate the repository itself with:
 
 See [references/troubleshooting.md](references/troubleshooting.md) for common errors,
 including `ERR_BLOCKED_BY_CLIENT`, a missing token, and a stale daemon.
+
+## Agent compatibility evidence
+
+A natural-prompt live test on 2026-07-28 passed with OpenCode 1.17.18 and the
+configured `nrp/glm-5` model, displayed locally as GLM 5.2. OpenCode independently
+loaded the complete skill, ran `status`, reused the connected session without
+reconnecting, ran `verify`, and withheld its final success response until both
+browser checks passed.
+
+- [GLM 5.2 test report](artifacts/opencode-glm-5.2-2026-07-28/test-report.md)
+- [Sanitized transcript and assertions](artifacts/opencode-glm-5.2-2026-07-28/transcript.json)
+- [Browser verification screenshot](artifacts/opencode-glm-5.2-2026-07-28/browser-verification.png)
+
+The test covers skill discovery and reuse of an already connected browser session.
+The automated suite continues to cover connection lifecycle, reconnect behavior,
+redaction, durable supervision, and cross-process verification.
 
 ## Security
 
