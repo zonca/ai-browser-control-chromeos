@@ -20,6 +20,10 @@ ChromeOS browser bridge. The normal path remains in `SKILL.md`.
 Never substitute raw `playwright-cli attach`, `nohup`, shell `&`, repeated
 `connect` calls, or user-run terminal commands for this lifecycle.
 
+Do not combine lifecycle commands with `&&` or `||`. In particular, `status` exit 2
+means `connecting`, so boolean chaining can incorrectly skip the required next
+diagnostic.
+
 ## Deterministic start sequence
 
 Run each command in a separate agent terminal invocation unless foreground fallback
@@ -31,7 +35,7 @@ ai-browser-control-chromeos status
 
 | Result | Meaning | Required next action |
 |---|---|---|
-| Exit 0, `connected` | Named browser session is open | Reuse it with `tab-list` and `snapshot` |
+| Exit 0, `connected` | Named browser session is open | Run `verify` and reuse it |
 | Exit 2, `connecting` | A supervisor is already waiting | Run `wait 180`; do not call `connect` |
 | Exit 1, `disconnected` | No session or supervisor exists | Run one `connect` |
 | Other failure | Runtime or prerequisite problem | Run `SKILL_ROOT/scripts/doctor.sh` |
@@ -77,7 +81,7 @@ ai-browser-control-chromeos wait 180
 
 | Exit | Meaning | Required next action |
 |---|---|---|
-| 0 | Session is visible | Run the two-command verification |
+| 0 | Session is visible | Run `verify` |
 | 1 | Supervisor stopped before connection | Read `logs 40`, rerun `status`, and connect once only if now disconnected |
 | 2 | Invalid wait argument | Correct the agent's command |
 | 124 | Timed out while supervisor remained active | Read status and logs; keep the existing supervisor if status is `connecting` |
@@ -92,15 +96,16 @@ connection, not dependency repair.
 
 ## Cross-process verification
 
-Run both commands as separate terminal invocations:
+Run:
 
 ```bash
-ai-browser-control-chromeos tab-list
-ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos verify
 ```
 
-Success without a new handoff proves the durable session works across agent tool
-calls. A single successful `wait` is not the final verification.
+The command launches `tab-list` and `snapshot` in fresh Playwright CLI processes.
+Success without a new handoff proves the durable session works across process
+boundaries. A successful `status`, `wait`, or `tab-list` alone is not final
+verification. Do not claim completion until `verify` exits 0.
 
 If either verification command fails:
 

@@ -120,7 +120,7 @@ the user to run a terminal command.
 
 Agents should follow the deterministic
 [agent runbook](references/agent-runbook.md). The short version is to inspect state,
-branch once, and verify reuse across separate terminal calls.
+branch once, and verify reuse across separate Playwright CLI processes.
 
 The agent checks the shared session first:
 
@@ -178,6 +178,7 @@ opens Chrome.
 Then use the browser-control commands:
 
 ```bash
+ai-browser-control-chromeos verify
 ai-browser-control-chromeos goto https://example.com
 ai-browser-control-chromeos snapshot
 ai-browser-control-chromeos find "Sign in"
@@ -206,8 +207,14 @@ ai-browser-control-chromeos connect
 ai-browser-control-chromeos status
 ai-browser-control-chromeos wait 180
 ai-browser-control-chromeos logs 40
+ai-browser-control-chromeos verify
 ai-browser-control-chromeos disconnect
 ```
+
+`verify` runs both `tab-list` and `snapshot` in fresh Playwright CLI processes and
+fails unless both succeed. Agents should use it as the completion gate before
+reporting that browser control is ready. Run `status`, `wait`, and `logs` as separate
+shell commands because nonzero lifecycle exit codes can represent expected states.
 
 Do not call `connect` before every action. First run `status` and reuse an open or
 currently connecting session. `connect` is idempotent: it reports the existing

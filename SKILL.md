@@ -9,6 +9,14 @@ Connect an agent in Crostini to the user's existing ChromeOS Chrome profile thro
 the official Playwright extension. Reuse one named session across separate terminal
 calls so tabs, cookies, and interactive login state remain available.
 
+## Completion gate
+
+Do not report that browser control is ready or finish a browser-control test until
+`ai-browser-control-chromeos verify` exits 0. A successful `status`, `wait`, or
+`tab-list` alone is not completion. Run lifecycle and diagnostic commands
+separately; never join `status` to another command with `&&` or `||`, because its
+nonzero exit codes can describe expected states.
+
 ## Keep responsibilities clear
 
 The agent runs diagnostics, setup, connection services, polling, logs, browser
@@ -74,15 +82,15 @@ ai-browser-control-chromeos connect-foreground
 
 4. If a new handoff page opens, give the Chrome instruction below exactly once.
 5. Run `wait 180`.
-6. Verify the connection from two separate terminal invocations:
+6. Run the deterministic verification:
 
 ```bash
-ai-browser-control-chromeos tab-list
-ai-browser-control-chromeos snapshot
+ai-browser-control-chromeos verify
 ```
 
-Both commands must succeed without another Connect page. This cross-process check
-proves that later agent calls can reuse the durable session.
+`verify` launches `tab-list` and `snapshot` in separate Playwright CLI processes.
+Both must succeed without another Connect page. This check proves that later agent
+calls can reuse the durable session.
 
 Do not invoke raw `playwright-cli attach`, append `&`, use `nohup`, or repeatedly
 call `connect`. Those patterns bypass supervision or create stale handoffs.
@@ -118,7 +126,8 @@ ai-browser-control-chromeos wait 180
 124 on timeout. Use `status` periodically instead when the agent runtime needs short
 responsive calls. On failure, inspect `ai-browser-control-chromeos logs 40`; logs
 redact the extension token. Return to the status branch instead of blindly creating
-another relay.
+another relay. A timeout is not completion: if `status` still says `connecting`,
+keep the same supervisor, repeat the handoff instruction if needed, and wait again.
 
 ## Do not retry stale relay pages
 
@@ -172,7 +181,7 @@ the same session.
 ## Recover by state, not by repeated attempts
 
 1. Run `status`.
-2. If connected, refresh with `tab-list` and `snapshot`; do not reconnect.
+2. If connected, run `verify`; do not reconnect.
 3. If connecting, keep the existing supervisor and inspect its redacted log.
 4. If disconnected, run `reconnect` once and use only the newest handoff.
 5. If durable service startup exits 3, use one foreground terminal session.
@@ -195,6 +204,9 @@ Leave the session open when more browser work is expected. Otherwise run:
 ```bash
 ai-browser-control-chromeos disconnect
 ```
+
+Before the final response, confirm that `verify` exited 0. If it did not, report the
+current state and required user handoff instead of claiming success.
 
 Report the final page title and URL without exposing tokens, cookies, or other
 secrets.

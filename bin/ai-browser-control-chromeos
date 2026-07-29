@@ -440,6 +440,14 @@ show_logs() {
   tail -n "$lines" "$log_file"
 }
 
+verify_browser() {
+  printf '%s\n' 'Verification 1/2: listing tabs in a fresh Playwright CLI process.'
+  run_cli tab-list
+  printf '%s\n' 'Verification 2/2: capturing a snapshot in a fresh Playwright CLI process.'
+  run_cli snapshot
+  printf '%s\n' 'Browser-control verification passed: tab-list and snapshot both succeeded.'
+}
+
 stop_recorded_supervisor() {
   local pid="$1"
   kill "$pid" 2>/dev/null || true
@@ -505,6 +513,14 @@ case "${1:-}" in
     }
     show_logs "$@"
     ;;
+  verify)
+    shift
+    [[ $# -eq 0 ]] || {
+      printf 'verify does not accept arguments\n' >&2
+      exit 2
+    }
+    verify_browser
+    ;;
   disconnect)
     shift
     [[ $# -eq 0 ]] || {
@@ -523,7 +539,7 @@ case "${1:-}" in
     run_supervisor "$@"
     ;;
   "")
-    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|connect-foreground [--persistent]|status|wait|logs|disconnect|reconnect [--persistent]|<browser-command>}\n' >&2
+    printf 'Usage: ai-browser-control-chromeos {connect [--persistent]|connect-foreground [--persistent]|status|wait|logs|verify|disconnect|reconnect [--persistent]|<browser-command>}\n' >&2
     exit 2
     ;;
   *)

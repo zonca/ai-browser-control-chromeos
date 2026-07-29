@@ -89,8 +89,8 @@ documentation_contract = {
         "Exit 2, `connecting`",
         "ai-browser-control-chromeos connect-foreground",
         "ai-browser-control-chromeos wait 180",
-        "ai-browser-control-chromeos tab-list",
-        "ai-browser-control-chromeos snapshot",
+        "ai-browser-control-chromeos verify",
+        "never join `status`",
         "Missing mcpRelayUrl parameter in URL",
         "Failed to connect to MCP relay: WebSocket error",
         "Do not invoke raw `playwright-cli attach`",
@@ -99,7 +99,8 @@ documentation_contract = {
     "references/agent-runbook.md": (
         "Deterministic start sequence",
         "Cross-process verification",
-        "Run both commands as separate terminal invocations",
+        "ai-browser-control-chromeos verify",
+        "Do not combine lifecycle commands",
         "Exit 3",
         "Exit 124",
         "keep the existing supervisor",
@@ -243,6 +244,14 @@ case "$command" in
     printf '%s pid=%s detach\n' "$(date +%s.%N)" "$$" >>"$trace"
     rm -f "$browser_state" "$list_ready_at"
     ;;
+  tab-list)
+    printf '%s pid=%s verify-tab-list\n' "$(date +%s.%N)" "$$" >>"$trace"
+    printf '%s\n' 'tab 0: Example (https://example.com)'
+    ;;
+  snapshot)
+    printf '%s pid=%s verify-snapshot\n' "$(date +%s.%N)" "$$" >>"$trace"
+    printf '%s\n' '- document "Example"'
+    ;;
   *)
     printf 'unsupported fake command: %s\n' "$command" >&2
     exit 2
@@ -263,6 +272,25 @@ lifecycle_env=(
   AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=2
   AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=3
 )
+
+verify_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" verify)"
+[[ "$verify_output" == *'Verification 1/2'* ]]
+[[ "$verify_output" == *'tab 0: Example'* ]]
+[[ "$verify_output" == *'Verification 2/2'* ]]
+[[ "$verify_output" == *'- document "Example"'* ]]
+[[ "$verify_output" == *'Browser-control verification passed'* ]]
+mapfile -t verify_pids < <(awk '
+  /verify-tab-list|verify-snapshot/ {
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^pid=/) {
+        sub(/^pid=/, "", $i)
+        print $i
+      }
+    }
+  }
+' "$lifecycle_state/fake-trace")
+[[ ${#verify_pids[@]} -eq 2 ]]
+[[ "${verify_pids[0]}" != "${verify_pids[1]}" ]]
 
 set +e
 invalid_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect --persistant 2>&1)"
