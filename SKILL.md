@@ -208,5 +208,7 @@ ai-browser-control-chromeos disconnect
 Before the final response, confirm that `verify` exited 0. If it did not, report the
 current state and required user handoff instead of claiming success.
 
-Report the final page title and URL without exposing tokens, cookies, or other
-secrets.
+Report the final page title and a sanitized URL without exposing tokens, cookies,
+or other secrets. For `chrome-extension://` connection pages, remove the entire
+query string and fragment before replying. Token redaction alone is insufficient:
+`mcpRelayUrl` can still reveal a local port and relay/session identifier.

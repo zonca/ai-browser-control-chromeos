@@ -93,6 +93,8 @@ documentation_contract = {
         "never join `status`",
         "Missing mcpRelayUrl parameter in URL",
         "Failed to connect to MCP relay: WebSocket error",
+        "remove the entire",
+        "mcpRelayUrl",
         "Do not invoke raw `playwright-cli attach`",
         "references/agent-runbook.md",
     ),
