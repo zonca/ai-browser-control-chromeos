@@ -16,15 +16,9 @@ handoff as a reusable skill and persistent local bridge.
 
 ## How it works
 
-```text
-AI agent -> ai-browser-control-chromeos -> named browser-control daemon
-                                      |
-                                      v
-                              Playwright extension
-                                      |
-                                      v
-                         existing ChromeOS Chrome profile
-```
+![Architecture diagram showing AI coding agents in Crostini reusing a durable
+session that crosses a validated handoff into the Playwright extension and the
+user's existing ChromeOS Chrome profile.](assets/browser-control-architecture.png)
 
 The agent runs `connect`, which launches the relay under Crostini's user service
 manager and returns immediately. The service survives the short terminal call that
@@ -265,19 +259,27 @@ including `ERR_BLOCKED_BY_CLIENT`, a missing token, and a stale daemon.
 
 ## Agent compatibility evidence
 
-A natural-prompt live test on 2026-07-28 passed with OpenCode 1.17.18 and the
-configured `nrp/glm-5` model, displayed locally as GLM 5.2. OpenCode independently
-loaded the complete skill, ran `status`, reused the connected session without
-reconnecting, ran `verify`, and withheld its final success response until both
-browser checks passed.
+The same natural-language prompt was tested live on 2026-07-28 with three agent
+stacks. The prompt did not name any commands. Each agent had to discover the skill,
+check `status`, reuse the existing session without reconnecting, run `verify`, and
+wait for both fresh-process browser checks before replying.
 
-- [GLM 5.2 test report](artifacts/opencode-glm-5.2-2026-07-28/test-report.md)
-- [Sanitized transcript and assertions](artifacts/opencode-glm-5.2-2026-07-28/transcript.json)
-- [Browser verification screenshot](artifacts/opencode-glm-5.2-2026-07-28/browser-verification.png)
+| Agent stack | Result | Evidence |
+| --- | --- | --- |
+| OpenCode 1.17.18 with GLM 5.2 | PASS, 8/8 assertions | [Report](artifacts/opencode-glm-5.2-2026-07-28/test-report.md), [sanitized transcript](artifacts/opencode-glm-5.2-2026-07-28/transcript.json), [screenshot](artifacts/opencode-glm-5.2-2026-07-28/browser-verification.png) |
+| Qwen Code 0.20.0 with `qwen3-small` | PASS, 8/8 assertions | [Report](artifacts/qwen-code-qwen3-small-2026-07-28/test-report.md), [sanitized transcript](artifacts/qwen-code-qwen3-small-2026-07-28/transcript.json), [screenshot](artifacts/qwen-code-qwen3-small-2026-07-28/browser-verification.png) |
+| Agy 1.1.8 with its managed default model | PASS, 8/8 assertions after a sanitization improvement | [Report](artifacts/agy-2026-07-28/test-report.md), [sanitized transcript](artifacts/agy-2026-07-28/transcript.json), [screenshot](artifacts/agy-2026-07-28/browser-verification.png) |
 
-The test covers skill discovery and reuse of an already connected browser session.
-The automated suite continues to cover connection lifecycle, reconnect behavior,
-redaction, durable supervision, and cross-process verification.
+The Agy run exposed a reporting edge case: token redaction still left a local relay
+identifier in the connection URL. Commit `91fa844` now requires agents to remove
+the complete query string and fragment from extension connection URLs. A fresh Agy
+run then passed all assertions. The extension confirmation page may still render
+an upstream cosmetic fallback client label; this does not affect the named durable
+session or browser control.
+
+These runs cover skill discovery and warm-session reuse. The automated suite
+continues to cover connection lifecycle, reconnect behavior, redaction, durable
+supervision, and cross-process verification.
 
 ## Security
 

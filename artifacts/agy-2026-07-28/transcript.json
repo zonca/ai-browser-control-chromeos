@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "date": "2026-07-28",
+  "result": "pass",
+  "environment": {
+    "agent": "Agy",
+    "agent_version": "1.1.8",
+    "model_selection": "Agy-managed default",
+    "skill_commit_tested": "91fa844"
+  },
+  "prompt": "Confirm that you can control my existing ChromeOS Chrome browser. Use the relevant installed skill and follow it exactly. Do not ask me to run terminal commands. Do not navigate or modify the page. Report the active page title and URL only after every required readiness check succeeds.",
+  "pre_fix_observation": {
+    "result": "readiness passed; URL sanitization assertion failed",
+    "finding": "Token redaction did not remove the local relay port and relay identifier from the URL query string.",
+    "resolution": "Commit 91fa844 requires the complete query string and fragment to be removed from extension connection URLs."
+  },
+  "events": [
+    {
+      "type": "skill",
+      "name": "ai-browser-control-chromeos",
+      "status": "loaded",
+      "content_truncated": false
+    },
+    {
+      "type": "command",
+      "command": "ai-browser-control-chromeos status",
+      "exit_code": 0,
+      "sanitized_output": "connected: session chromeos is open"
+    },
+    {
+      "type": "command",
+      "command": "ai-browser-control-chromeos verify",
+      "exit_code": 0,
+      "sanitized_output": "Browser-control verification passed: tab-list and snapshot both succeeded."
+    },
+    {
+      "type": "final",
+      "sanitized_output": {
+        "status": "connected",
+        "verification": "passed",
+        "page_title": "Welcome",
+        "page_url": "chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html",
+        "session_query_parameters": "removed"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "text": "Agy loaded the complete browser-control skill",
+      "passed": true,
+      "evidence": "Agy read the installed 215-line SKILL.md before running commands."
+    },
+    {
+      "text": "The recorded Agy version performed the run",
+      "passed": true,
+      "evidence": "The CLI version was 1.1.8 and the test used its managed default model."
+    },
+    {
+      "text": "Status was checked before browser verification",
+      "passed": true,
+      "evidence": "The first shell call was ai-browser-control-chromeos status and exited 0."
+    },
+    {
+      "text": "The existing connected session was reused without reconnecting",
+      "passed": true,
+      "evidence": "No connect or reconnect command occurred."
+    },
+    {
+      "text": "The deterministic verification gate passed",
+      "passed": true,
+      "evidence": "ai-browser-control-chromeos verify exited 0 after tab-list and snapshot succeeded."
+    },
+    {
+      "text": "The final response waited for verification",
+      "passed": true,
+      "evidence": "The final response followed the successful verify tool result."
+    },
+    {
+      "text": "No page navigation or mutation occurred",
+      "passed": true,
+      "evidence": "Only status and verify shell commands were executed."
+    },
+    {
+      "text": "Sensitive connection details were not included in the final response",
+      "passed": true,
+      "evidence": "The final URL omitted the complete query string."
+    }
+  ],
+  "redactions": [
+    "relay URL",
+    "extension token",
+    "local relay identifiers",
+    "Agy conversation identifier"
+  ]
+}
