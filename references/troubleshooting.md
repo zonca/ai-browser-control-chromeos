@@ -68,6 +68,22 @@ Use only the newest page titled **Connect AI agent to Chrome**. Click its Copy
 button, then paste into Chrome's address bar. The helper now rejects a missing or
 invalid `mcpRelayUrl` before opening a handoff page.
 
+## Unsupported client protocol
+
+If Chrome says "The client uses an unsupported protocol version. Update Playwright
+MCP or CLI to the latest version", inspect the selected executable with
+`command -v playwright-cli` and `playwright-cli --version`, compare with
+`npm view @playwright/cli version`, then run `npm install -g @playwright/cli@latest`.
+Updating the wrapper with `setup.sh --skip-cli-install` does not update Playwright.
+
+An already running daemon or an old handoff page retains its earlier protocol.
+Check status, stop only the affected incompatible connection, and start one fresh
+connection using the updated executable. Discard the older copied address. Preserve
+all generated protocol parameters in the handoff helper; never change the version
+parameter manually to bypass compatibility checks. If the latest client still
+fails on the newest page, investigate its generated protocol and the installed
+extension version rather than repeatedly reconnecting. Run `verify` after handoff.
+
 ## Extension says `"unknown" connected`
 
 The handoff sends the client label `AI Browser Control`. Older extension releases

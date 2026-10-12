@@ -12,3 +12,8 @@ with isolated fake sessions before installing a runtime change.
 
 A runtime maintenance test does not require navigating the user's live browser.
 Never claim live browser verification from simulated lifecycle checks.
+
+For an explicit unsupported extension protocol error, update the actual Playwright
+command-line package and replace only the affected incompatible daemon and handoff.
+A wrapper reinstall alone does not update Playwright. Never manually spoof the
+protocol version to bypass the extension's compatibility check.

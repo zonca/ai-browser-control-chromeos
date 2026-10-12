@@ -129,6 +129,11 @@ redact the extension token. Return to the status branch instead of blindly creat
 another relay. A timeout is not completion: if `status` still says `connecting`,
 keep the same supervisor, repeat the handoff instruction if needed, and wait again.
 
+For an explicit unsupported client protocol error, use the
+[unsupported-protocol recovery](references/troubleshooting.md#unsupported-client-protocol).
+Updating this wrapper alone does not update the Playwright package or a running
+daemon. Do not retry the older handoff address after updating the client.
+
 ## Do not retry stale relay pages
 
 These Chrome messages identify an old or malformed handoff:
