@@ -180,6 +180,15 @@ the same session.
 
 ## Recover by state, not by repeated attempts
 
+A health-check timeout or transport error is inconclusive. The supervisor preserves
+the existing relay and waits for recovery. Do not reconnect based on old visibility
+miss messages alone. Use the wrapper for every command: it keeps a stable private
+Playwright workspace across terminal calls and working-directory changes. Avoid
+raw `playwright-cli list`, which can remove session records during a failed check.
+After recovery, refresh the snapshot and inspect saved form values before resuming.
+Never automatically repeat a submission or other consequential action.
+
+
 1. Run `status`.
 2. If connected, run `verify`; do not reconnect.
 3. If connecting, keep the existing supervisor and inspect its redacted log.
@@ -212,3 +221,12 @@ Report the final page title and a sanitized URL without exposing tokens, cookies
 or other secrets. For `chrome-extension://` connection pages, remove the entire
 query string and fragment before replying. Token redaction alone is insufficient:
 `mcpRelayUrl` can still reveal a local port and relay/session identifier.
+
+## Runtime maintenance
+
+For changes to this skill or its runtime, run `scripts/test.sh` and validate the
+skill metadata. These isolated checks do not require a live browser handoff. The
+`verify` completion gate applies when connecting or testing actual browser control;
+do not claim a live connection was verified from simulated tests. Install the
+updated wrapper with `scripts/setup.sh --skip-cli-install`. Existing supervisors
+keep their original code until a new connection is started.

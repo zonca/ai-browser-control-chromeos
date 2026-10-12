@@ -20,6 +20,7 @@ else
 fi
 
 command -v npm >/dev/null 2>&1 && pass "npm $(npm --version)" || fail 'npm is missing'
+command -v timeout >/dev/null 2>&1 && pass 'Bounded health-check timeout found' || fail 'timeout is missing'
 command -v python3 >/dev/null 2>&1 && pass "Python $(python3 --version 2>&1)" || fail 'python3 is missing'
 command -v garcon-url-handler >/dev/null 2>&1 && pass 'ChromeOS garcon-url-handler found' || warn 'garcon-url-handler not found'
 [[ -d /mnt/chromeos ]] && pass 'ChromeOS mount detected' || warn '/mnt/chromeos not detected'

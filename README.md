@@ -167,10 +167,17 @@ connection service is waiting, and `1` when disconnected. `wait` returns `124`
 on timeout. Connection logs are token-redacted and stored under
 `~/.local/state/ai-browser-control-chromeos/`.
 
-After Playwright reports a successful attachment, the supervisor allows time for the
-named session to become visible and requires multiple consecutive visibility misses
-before declaring a disconnect. This avoids tearing down a healthy relay during the
-short registration window immediately after the Chrome handoff.
+Health checks use a bounded, read-only `tab-list`, rather than Playwright's `list`
+command, which can prune session records on failed socket checks. Timeouts and
+transport errors preserve the relay. Only consecutive explicit responses that the
+selected browser is not open confirm closure. The supervisor also preserves the
+relay if initial attachment readiness is slow.
+
+Every Playwright call runs from a private workspace under the state directory.
+This keeps service and terminal commands in the same session namespace when the
+agent changes directories. Updating the installed wrapper affects new connection
+supervisors; a running supervisor retains its original code. An older session from
+the previous workspace is not migrated automatically.
 
 If a host does not expose a working user service manager, `connect` exits 3 instead
 of claiming that a disposable background child started. The agent then starts a

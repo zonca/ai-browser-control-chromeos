@@ -207,27 +207,13 @@ attach_count="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-count"
 attach_delay="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-delay"
 list_ready_at="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-list-ready-at"
 trace="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-trace"
+health_mode="$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-health-mode"
+printf '%s\n' "$PWD" >>"$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-cwds"
 
 case "$command" in
   list)
-    now="$(date +%s%N)"
-    ready_at=0
-    [[ ! -r "$list_ready_at" ]] || ready_at="$(<"$list_ready_at")"
-    if [[ -r "$browser_state" ]] && ((now >= ready_at)); then
-      trace_state=present
-    else
-      trace_state=absent
-    fi
-    printf '%s pid=%s list state=%s\n' "$(date +%s.%N)" "$$" "$trace_state" >>"$trace"
-    if [[ "$trace_state" == present ]]; then
-      printf '%s\n' \
-        '### Browsers' \
-        "- $session:" \
-        '  - status: open' \
-        '  - browser-type: chrome (attached)'
-    else
-      printf '%s\n' '### Browsers' '  (no browsers)'
-    fi
+    printf 'Health checks must not invoke the registry-pruning list command.\n' >&2
+    exit 99
     ;;
   attach)
     count=0
@@ -247,6 +233,17 @@ case "$command" in
     rm -f "$browser_state" "$list_ready_at"
     ;;
   tab-list)
+    mode=healthy
+    [[ ! -r "$health_mode" ]] || mode="$(<"$health_mode")"
+    printf '%s pid=%s health-mode=%s\n' "$(date +%s.%N)" "$$" "$mode" >>"$trace"
+    case "$mode" in
+      error) printf 'Transient transport error\n' >&2; exit 1 ;;
+      timeout) sleep 10 ;;
+    esac
+    if [[ ! -r "$browser_state" ]] || (( $(date +%s%N) < $(cat "$list_ready_at" 2>/dev/null || printf 0) )); then
+      printf "The browser '%s' is not open.\n" "$session" >&2
+      exit 1
+    fi
     printf '%s pid=%s verify-tab-list\n' "$(date +%s.%N)" "$$" >>"$trace"
     printf '%s\n' 'tab 0: Example (https://example.com)'
     ;;
@@ -273,8 +270,10 @@ lifecycle_env=(
   AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=0.05
   AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=2
   AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=3
+  AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT=1
 )
 
+printf '%s\n' open >"$lifecycle_browser_state"
 verify_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" verify)"
 [[ "$verify_output" == *'Verification 1/2'* ]]
 [[ "$verify_output" == *'tab 0: Example'* ]]
@@ -293,6 +292,8 @@ mapfile -t verify_pids < <(awk '
 ' "$lifecycle_state/fake-trace")
 [[ ${#verify_pids[@]} -eq 2 ]]
 [[ "${verify_pids[0]}" != "${verify_pids[1]}" ]]
+
+rm -f "$lifecycle_browser_state"
 
 set +e
 invalid_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect --persistant 2>&1)"
@@ -353,6 +354,35 @@ wait_for_attach_count() {
   return 1
 }
 
+check_inconclusive_health() {
+  local expected_pid="$1" before attempts errors_before
+  errors_before="$(awk '/health-mode=error/ {n++} END {print n+0}' "$lifecycle_state/fake-trace")"
+  before="$(<"$lifecycle_attach_count")"
+  printf '%s\n' error >"$lifecycle_state/fake-health-mode"
+  # More than the old three-miss threshold must never end the supervisor.
+  for ((attempts = 0; attempts < 100; attempts++)); do
+    if (( $(awk '/health-mode=error/ {n++} END {print n+0}' "$lifecycle_state/fake-trace") >= errors_before + 5 )); then
+      break
+    fi
+    sleep 0.05
+  done
+  ((attempts < 100))
+  kill -0 "$expected_pid"
+  [[ "$(<"$lifecycle_attach_count")" == "$before" ]]
+  [[ "$(<"$lifecycle_pid_file")" == "$expected_pid" ]]
+
+  # A hung probe must time out without killing the relay or starting a handoff.
+  printf '%s\n' timeout >"$lifecycle_state/fake-health-mode"
+  sleep 1.5
+  kill -0 "$expected_pid"
+  [[ "$(<"$lifecycle_attach_count")" == "$before" ]]
+  rm -f "$lifecycle_state/fake-health-mode"
+  env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+  [[ "$(<"$lifecycle_attach_count")" == "$before" ]]
+  sleep 0.2
+  kill -0 "$expected_pid"
+}
+
 systemd_usable=false
 if command -v systemctl >/dev/null 2>&1 &&
    command -v systemd-run >/dev/null 2>&1 &&
@@ -380,6 +410,7 @@ if [[ "$systemd_usable" == true ]]; then
   log_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" logs 40)"
   [[ "$log_output" == *'[REDACTED]'* ]]
   [[ "$log_output" != *'test-token-not-secret'* ]]
+  check_inconclusive_health "$first_pid"
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 
   if env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status >/dev/null; then
@@ -444,6 +475,7 @@ set -e
 wait_for_attach_count "$((count_before + 1))" || exit 1
 env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+check_inconclusive_health "$foreground_pid"
 env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 for _ in {1..50}; do
@@ -452,6 +484,34 @@ for _ in {1..50}; do
 done
 ! kill -0 "$foreground_pid" 2>/dev/null
 [[ "$(cat "$foreground_log")" == *'Foreground connection supervisor starting'* ]]
+
+# Slow initial readiness must preserve normal supervision, not just persistent mode.
+printf '%s\n' error >"$lifecycle_state/fake-health-mode"
+env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+  AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=0 \
+  "$root/bin/ai-browser-control-chromeos" connect-foreground \
+  >"$foreground_log" 2>&1 &
+foreground_pid=$!
+for _ in {1..100}; do
+  if grep -q 'preserving the relay while monitoring' "$foreground_log"; then
+    break
+  fi
+  sleep 0.05
+done
+grep -q 'preserving the relay while monitoring' "$foreground_log"
+check_inconclusive_health "$foreground_pid"
+rm -f "$lifecycle_browser_state"
+for _ in {1..100}; do
+  ! kill -0 "$foreground_pid" 2>/dev/null && break
+  sleep 0.05
+done
+! kill -0 "$foreground_pid" 2>/dev/null
+grep -q 'Session closure confirmed' "$foreground_log"
+[[ ! -e "$lifecycle_pid_file" ]]
+
+# Commands invoked from unrelated caller directories share one stable workspace.
+(cd /tmp; env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status >/dev/null) || true
+[[ "$(sort -u "$lifecycle_state/fake-cwds")" == "$lifecycle_state/cli-workspace" ]]
 
 snapshot_file="$cache_dir/feed-snapshot.yml"
 cat >"$snapshot_file" <<'YAML'

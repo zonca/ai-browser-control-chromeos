@@ -121,6 +121,21 @@ ai-browser-control-chromeos snapshot
 If status is still connected, use refs from the new snapshot. If status becomes
 disconnected, inspect the redacted log and reconnect once.
 
+## Missed visibility checks or slow form operations
+
+Older supervisors stopped after three missing `list` results, which also ended the
+relay owned by the service. Current supervisors use bounded, read-only tab checks.
+Timeouts and generic errors preserve the relay; only consecutive explicit not-open
+responses confirm closure. Do not increase the miss threshold as the primary fix.
+
+Run `status` and inspect the redacted log. If it reports an inconclusive check,
+keep the supervisor and wait for recovery. Refresh a snapshot before continuing,
+inspect the current form values, and never replay a submission automatically.
+
+After installing updated runtime files, a running supervisor still uses its old
+code. Apply the update at the next connection boundary. The private workspace also
+means a session created by the older wrapper is not automatically migrated.
+
 ## Repeated Connect tabs
 
 Check for an agent repeatedly starting `attach`, using different session names, or

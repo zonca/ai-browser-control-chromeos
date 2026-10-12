@@ -10,6 +10,7 @@ poll_interval="${AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL:-15}"
 reconnect_delay="${AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY:-3}"
 attach_ready_timeout="${AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT:-10}"
 disconnect_misses="${AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES:-3}"
+health_timeout="${AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT:-10}"
 supervisor_mode="${AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR:-auto}"
 client_name="${AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME:-AI Browser Control}"
 self="$(readlink -f "$0")"
@@ -20,6 +21,10 @@ if [[ ! "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
 fi
 if [[ "$supervisor_mode" != auto && "$supervisor_mode" != systemd && "$supervisor_mode" != foreground ]]; then
   printf 'AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR must be auto, systemd, or foreground.\n' >&2
+  exit 2
+fi
+if [[ ! "$health_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'Health timeout must be a positive integer.\n' >&2
   exit 2
 fi
 if [[ ! "$attach_ready_timeout" =~ ^[0-9]+$ || ! "$disconnect_misses" =~ ^[1-9][0-9]*$ ]]; then
@@ -44,6 +49,11 @@ if [[ -z "$playwright_cli" || ! -x "$playwright_cli" ]]; then
   exit 1
 fi
 
+if ! command -v timeout >/dev/null 2>&1; then
+  printf 'timeout is required for bounded health checks.\n' >&2
+  exit 1
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
   printf 'python3 is required to redact secrets from command output.\n' >&2
   exit 1
@@ -62,7 +72,8 @@ if [[ -z "$token" || "$token" == *$'\n'* ]]; then
 fi
 
 umask 077
-mkdir -p "$output_dir" "$state_dir"
+cli_workdir="$state_dir/cli-workspace"
+mkdir -p "$output_dir" "$state_dir" "$cli_workdir/.playwright"
 chmod 700 "$state_dir"
 export PLAYWRIGHT_MCP_EXTENSION_TOKEN="$token"
 export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$connect_helper"
@@ -74,7 +85,13 @@ export AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR="$state_dir"
 
 run_cli() {
   set +e
-  "$playwright_cli" "-s=$session" "$@" 2>&1 |
+  local -a launcher=()
+  if [[ "${health_probe:-false}" == true ]]; then
+    launcher=(timeout --kill-after=2 "$health_timeout")
+  fi
+  # Playwright scopes sessions to the nearest .playwright directory. The service
+  # and every later command must use the same workspace, independent of caller cwd.
+  (cd "$cli_workdir"; "${launcher[@]}" "$playwright_cli" "-s=$session" "$@") 2>&1 |
     PLAYWRIGHT_TOKEN_TO_REDACT="$token" python3 -u -c '
 import os
 import sys
@@ -90,12 +107,21 @@ for line in sys.stdin:
   return "${statuses[0]}"
 }
 
+# 0 = healthy, 1 = explicitly not open, 2 = inconclusive (busy, timeout, error).
+# Avoid `list`: upstream prunes session records after failed socket checks.
 session_is_open() {
-  local listing
-  if ! listing="$(run_cli list 2>/dev/null)"; then
+  local probe_output probe_status
+  if probe_output="$(health_probe=true run_cli tab-list)"; then
+    return 0
+  else
+    probe_status=$?
+  fi
+  if ((probe_status != 124 && probe_status != 137)) &&
+     [[ "$probe_output" == *"Browser '$session' is not open"* ||
+        "$probe_output" == *"The browser '$session' is not open"* ]]; then
     return 1
   fi
-  [[ "$listing" == *"- $session:"* && "$listing" == *"status: open"* ]]
+  return 2
 }
 
 systemd_available() {
@@ -240,6 +266,7 @@ start_systemd_connection() {
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_RECONNECT_DELAY=$reconnect_delay"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=$attach_ready_timeout"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=$disconnect_misses"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT=$health_timeout"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=systemd"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME=$client_name"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLI=$playwright_cli"
@@ -322,27 +349,46 @@ start_foreground_connection() {
 }
 
 wait_for_attached_session() {
-  local attempt attempts=$((attach_ready_timeout * 10 + 1))
-  for ((attempt = 0; attempt < attempts; attempt++)); do
+  local deadline=$((SECONDS + attach_ready_timeout))
+  while true; do
     if session_is_open; then
       return 0
     fi
+    ((SECONDS < deadline)) || break
     sleep 0.1
   done
-  printf 'Playwright reported an attachment, but session %s did not become visible within %s seconds.\n' \
-    "$session" "$attach_ready_timeout"
+  printf 'Attachment is not yet responsive; preserving the relay while monitoring health.\n'
   return 1
 }
 
 monitor_attached_session() {
-  local misses=0
-  while ((misses < disconnect_misses)); do
+  local misses=0 probe_status uncertain=false
+  while true; do
     sleep "$poll_interval"
     if session_is_open; then
+      if [[ "$uncertain" == true ]] || ((misses > 0)); then
+        printf 'Session health recovered; reusing the existing relay.\n'
+      fi
       misses=0
+      uncertain=false
     else
+      probe_status=$?
+      if ((probe_status == 2)); then
+        # A slow form operation or transient command failure is not disconnection.
+        misses=0
+        if [[ "$uncertain" != true ]]; then
+          printf 'Session health check inconclusive; preserving the relay (no reconnect).\n'
+        fi
+        uncertain=true
+        continue
+      fi
+      uncertain=false
       ((misses += 1))
-      printf 'Session visibility check missed (%s/%s).\n' "$misses" "$disconnect_misses"
+      printf 'Session explicitly not open (%s/%s).\n' "$misses" "$disconnect_misses"
+      if ((misses >= disconnect_misses)); then
+        printf 'Session closure confirmed by consecutive explicit not-open responses.\n'
+        return 0
+      fi
     fi
   done
 }
@@ -368,10 +414,8 @@ run_supervisor() {
     if run_cli attach "--extension=$browser"; then
       if wait_for_attached_session; then
         printf 'Session %s is ready; monitoring connection health.\n' "$session"
-        monitor_attached_session
-      elif [[ "$persistent_mode" != true ]]; then
-        return 1
       fi
+      monitor_attached_session
     elif [[ "$persistent_mode" != true ]]; then
       return 1
     fi
@@ -390,7 +434,7 @@ show_status() {
 
   local pid
   if pid="$(supervisor_pid)"; then
-    printf 'connecting: durable supervisor %s is waiting for Chrome\n' "$pid"
+    printf 'connecting: durable supervisor %s is waiting for Chrome or a successful health check\n' "$pid"
     return 2
   fi
 

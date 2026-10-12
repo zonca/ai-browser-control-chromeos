@@ -91,8 +91,10 @@ supervisor that is still `connecting`.
 
 Exit 1 can also follow the final health checks of a session that was previously
 connected. Run the doctor only when the log shows a startup, dependency, or service
-failure; a normal sequence of consecutive session-visibility misses requires a new
-connection, not dependency repair.
+failure. Inconclusive health checks preserve the existing relay; they do not prove
+that reconnection is necessary. Only consecutive explicit not-open responses
+confirm closure. Refresh a snapshot before resuming form work after recovery, and
+never automatically replay a submission or other consequential action.
 
 ## Cross-process verification
 
@@ -175,8 +177,15 @@ advanced isolation:
 | `AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR` | `/tmp/ai-browser-control-chromeos-$UID` | Playwright artifacts |
 | `AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR` | `auto` | `auto`, `systemd`, or `foreground` |
 | `AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT` | `10` | Seconds allowed for initial session registration |
-| `AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES` | `3` | Consecutive missing-session checks before exit |
+| `AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES` | `3` | Consecutive explicit not-open responses before exit |
+| `AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT` | `10` | Seconds allowed for a read-only health check; timeout preserves the relay |
 | `AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL` | `15` | Seconds between health checks |
+
+The runtime uses `STATE_DIR/cli-workspace/.playwright` as a stable private workspace
+for service and terminal calls. Do not invoke raw commands from another directory
+and expect them to find that session. Use absolute paths for file arguments to
+browser commands, since relative paths resolve inside this private workspace. Read-only checks never use `list`, because
+upstream can delete session records during failed socket checks.
 
 Do not change readiness or health-check timing to mask a failure. Inspect the
 redacted log and fix the observed cause.
