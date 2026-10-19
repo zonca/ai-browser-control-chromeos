@@ -51,6 +51,12 @@ else
   fail 'ai-browser-control-chromeos-connect helper is missing from PATH'
 fi
 
+if command -v ai-browser-control-chromeos-relay-shim >/dev/null 2>&1; then
+  pass "ChromeOS relay shim $(command -v ai-browser-control-chromeos-relay-shim)"
+else
+  fail 'ai-browser-control-chromeos-relay-shim is missing from PATH'
+fi
+
 token_file="${AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE:-$HOME/.config/ai-browser-control-chromeos/extension-token}"
 if [[ -s "$token_file" ]]; then
   mode="$(stat -c '%a' "$token_file" 2>/dev/null || printf unknown)"

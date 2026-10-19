@@ -22,11 +22,20 @@ user's existing ChromeOS Chrome profile.](assets/browser-control-architecture.pn
 
 The agent runs `connect`, which launches the relay under Crostini's user service
 manager and returns immediately. The service survives the short terminal call that
-started it. A small local page opens in Chrome. The user clicks Copy, pastes the
-generated extension address into Chrome's address bar, and presses Enter. The agent
-polls connection status and continues automatically. Later commands reuse the named
-daemon without another Connect tab. The handoff identifies itself as
-`AI Browser Control` instead of a generic Playwright client.
+started it. The supervisor also starts a small relay shim that gives the relay a
+stable loopback address. A local page opens in Chrome: the user clicks a previously
+created **Connect AI** bookmark, and the extension auto-connects through the shim
+using the pre-shared token, with no other interaction. The first connection offers
+a one-time **Copy stable connect address** button to create that bookmark. The
+classic copy-and-paste address remains as a fallback. The agent polls connection
+status and continues automatically. Later commands reuse the named daemon without
+another Connect tab. The handoff identifies itself as `AI Browser Control` instead
+of a generic Playwright client.
+
+ChromeOS allows only browser-initiated navigation to the extension connect page,
+so the bookmark click is a required user step: `garcon-url-handler` refuses the
+`chrome-extension://` scheme, web pages cannot link to it, and CDP or
+command-line opens are blocked with `ERR_BLOCKED_BY_CLIENT`.
 
 ## Requirements
 
@@ -56,7 +65,8 @@ The setup script:
 
 1. Checks Node.js, npm, Python, and the ChromeOS URL handler.
 2. Permanently installs `@playwright/cli` if needed.
-3. Installs `ai-browser-control-chromeos` and its URL handoff helper in `~/.local/bin`.
+3. Installs `ai-browser-control-chromeos`, its URL handoff helper, and the relay
+   shim in `~/.local/bin`.
 4. Prompts privately for the extension token and stores it with mode `600`.
 5. Links this repository into `~/.agents/skills/ai-browser-control-chromeos` by default.
 
@@ -126,8 +136,11 @@ inspect the ChromeOS browser profile.
 
 When the connection page opens, ask:
 
-> Click **Copy browser connection address**, then press **Ctrl+L**, **Ctrl+V**,
-> and **Enter**. Tell me when the extension page says it is connected.
+> Click your **Connect AI** bookmark. First time only: click **Copy stable
+> connect address**, open the Bookmark manager with **Ctrl+Shift+O**, add a new
+> bookmark named *Connect AI*, and paste the address into its URL field. Without
+> the bookmark, click **Copy browser connection address**, then press **Ctrl+L**,
+> **Ctrl+V**, and **Enter**. Tell me when the extension page says it is connected.
 
 After that, the agent polls the connection service and continues. It must not ask
 the user to run a terminal command.
@@ -292,6 +305,12 @@ supervision, and cross-process verification.
 
 - The extension token is stored outside the repository with permission mode `600`.
 - The wrapper redacts the token if Playwright includes it in terminal output.
+- The **Connect AI** bookmark contains the extension token, exactly like the
+  address that the classic flow puts on the clipboard. The shim rejects
+  connections without a valid token and only forwards to loopback relays, so the
+  bookmark grants control only to processes that can already read the token file
+  on this Chromebook. Regenerating the token in the extension invalidates the
+  bookmark; recreate it from a fresh handoff page.
 - Browser automation has the same access as the signed-in user. Agents should only
   navigate and act within the scope the user authorized.
 - Keep the extension and Playwright CLI updated from their official sources.

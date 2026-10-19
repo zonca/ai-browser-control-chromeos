@@ -1,0 +1,216 @@
+#!/usr/bin/env node
+// Stable-address relay shim for AI Browser Control on ChromeOS.
+//
+// Playwright's extension relay listens on an ephemeral port under a random
+// /extension/<uuid> path, so the connect address changes on every `attach`
+// and cannot be bookmarked. This shim listens on one stable loopback port,
+// validates the extension token, rewrites the request path to the current
+// upstream relay, and pipes the WebSocket both ways.
+//
+// Environment contract (all provided by the wrapper/supervisor):
+//   AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT   required TCP port
+//   AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR   required state directory
+//   AI_BROWSER_CONTROL_CHROMEOS_SESSION     required session name
+//   AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE  required extension token file (mode 600)
+//
+// The current upstream relay URL is read fresh from
+//   $STATE_DIR/handoff-$SESSION.url
+// on every connection, written there by the connect helper. The shim never
+// logs tokens or relay URLs and exits when its parent process disappears.
+
+'use strict';
+
+const http = require('http');
+const net = require('net');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const STABLE_PATH = '/stable';
+
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    process.stderr.write(`relay shim: missing ${name}\n`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const port = Number.parseInt(requiredEnv('AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT'), 10);
+const stateDir = requiredEnv('AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR');
+const session = requiredEnv('AI_BROWSER_CONTROL_CHROMEOS_SESSION');
+const tokenFile = requiredEnv('AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE');
+
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  process.stderr.write('relay shim: SHIM_PORT must be a valid TCP port\n');
+  process.exit(2);
+}
+
+function relayUrlFile() {
+  return path.join(stateDir, `handoff-${session}.url`);
+}
+
+function readToken() {
+  try {
+    const token = fs.readFileSync(tokenFile, 'utf8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+function tokensMatch(provided, expected) {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// Reads the upstream relay URL fresh on every connection so a new `attach`
+// is picked up without restarting the shim.
+function readUpstream() {
+  try {
+    const raw = fs.readFileSync(relayUrlFile(), 'utf8').trim();
+    const url = new URL(raw);
+    if (url.protocol !== 'ws:') return null;
+    // The shim only forwards to loopback upstreams on this container.
+    if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') return null;
+    const portNumber = Number.parseInt(url.port, 10);
+    if (!Number.isInteger(portNumber) || portNumber <= 0) return null;
+    return { host: '127.0.0.1', port: portNumber, path: url.pathname };
+  } catch {
+    return null;
+  }
+}
+
+let activeConnections = 0;
+
+function respondAndClose(socket, statusCode, reason) {
+  if (socket.writable) {
+    socket.write(`HTTP/1.1 ${statusCode} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  }
+  socket.destroy();
+}
+
+function handleUpgrade(req, socket, head) {
+  let requestUrl;
+  try {
+    requestUrl = new URL(req.url || '/', 'http://127.0.0.1');
+  } catch {
+    respondAndClose(socket, 400, 'Bad Request');
+    return;
+  }
+  if (requestUrl.pathname !== STABLE_PATH) {
+    respondAndClose(socket, 404, 'Not Found');
+    return;
+  }
+  if (!tokensMatch(requestUrl.searchParams.get('token'), readToken())) {
+    process.stderr.write('relay shim: rejected a connection with a missing or invalid token\n');
+    respondAndClose(socket, 403, 'Forbidden');
+    return;
+  }
+  const upstream = readUpstream();
+  if (!upstream) {
+    process.stderr.write('relay shim: no current upstream relay is available\n');
+    respondAndClose(socket, 503, 'Service Unavailable');
+    return;
+  }
+
+  const upstreamSocket = net.connect({ host: upstream.host, port: upstream.port });
+  let finished = false;
+  activeConnections += 1;
+
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    activeConnections -= 1;
+    socket.destroy();
+    upstreamSocket.destroy();
+  };
+
+  upstreamSocket.on('connect', () => {
+    // Rebuild the upgrade request against the current relay path. The token
+    // query is local to the shim and must not reach the upstream.
+    const lines = [
+      `GET ${upstream.path} HTTP/1.1`,
+      `Host: ${upstream.host}:${upstream.port}`,
+    ];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() === 'host') continue;
+      lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    }
+    upstreamSocket.write(`${lines.join('\r\n')}\r\n\r\n`);
+    if (head && head.length) upstreamSocket.write(head);
+    socket.pipe(upstreamSocket);
+    upstreamSocket.pipe(socket);
+  });
+
+  upstreamSocket.on('error', () => {
+    respondAndClose(socket, 503, 'Service Unavailable');
+    finish();
+  });
+  socket.on('error', finish);
+  socket.on('close', finish);
+  upstreamSocket.on('close', finish);
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && (req.url || '').split('?')[0] === '/status') {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({
+      ok: true,
+      session,
+      upstreamReady: readUpstream() !== null,
+      activeConnections,
+    }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end('Not Found');
+});
+server.on('upgrade', handleUpgrade);
+server.on('clientError', (_err, socket) => respondAndClose(socket, 400, 'Bad Request'));
+
+server.listen(port, () => {
+  process.stdout.write(`relay shim: listening for session ${session} on port ${port}\n`);
+});
+
+server.on('error', (error) => {
+  process.stderr.write(`relay shim: cannot listen on port ${port}: ${error.message}\n`);
+  process.exit(1);
+});
+
+// Exit when the parent (the connection supervisor) disappears. Under systemd
+// the unit cgroup also covers this; the watchdog protects foreground mode and
+// hard-killed supervisors. Orphans can be reparented to a subreaper instead of
+// PID 1, so the supervisor passes its own PID explicitly. The command line is
+// verified as well so a reused PID cannot keep a stale shim alive.
+const watchdogParent = Number.parseInt(process.env.AI_BROWSER_CONTROL_CHROMEOS_SHIM_PARENT_PID || '', 10);
+function parentIsSupervisor() {
+  if (!Number.isInteger(watchdogParent)) {
+    return process.ppid !== 1;
+  }
+  try {
+    process.kill(watchdogParent, 0);
+  } catch {
+    return false;
+  }
+  try {
+    const commandLine = fs.readFileSync(`/proc/${watchdogParent}/cmdline`, 'utf8');
+    return commandLine.includes('ai-browser-control-chromeos');
+  } catch {
+    return false;
+  }
+}
+setInterval(() => {
+  if (!parentIsSupervisor()) process.exit(0);
+}, 5000).unref();
+
+const shutdown = () => {
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 1000).unref();
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

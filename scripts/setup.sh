@@ -80,6 +80,7 @@ token_file="$config_dir/extension-token"
 install -d -m 700 "$bin_dir" "$config_dir"
 install -m 700 "$root/bin/ai-browser-control-chromeos" "$bin_dir/ai-browser-control-chromeos"
 install -m 700 "$root/bin/ai-browser-control-chromeos-connect" "$bin_dir/ai-browser-control-chromeos-connect"
+install -m 700 "$root/bin/ai-browser-control-chromeos-relay-shim" "$bin_dir/ai-browser-control-chromeos-relay-shim"
 
 token="${PLAYWRIGHT_MCP_EXTENSION_TOKEN:-}"
 if [[ -z "$token" && -r "$token_file" ]]; then

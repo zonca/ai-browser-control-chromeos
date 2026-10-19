@@ -103,18 +103,37 @@ Ask the user to install the official extension named in README. Then run:
 SKILL_ROOT/scripts/setup.sh
 ```
 
-The setup stores the token outside the repository with mode `600`. Pause at its
-hidden prompt so the user can type the token privately. Do not request the token in
-chat. After setup, rerun the doctor and return to the connection algorithm.
+The setup stores the token outside the repository with mode `600`, installs the
+wrapper, handoff helper, and relay shim, and pauses at its hidden prompt so the
+user can type the token privately. Do not request the token in chat. After
+setup, rerun the doctor and return to the connection algorithm.
+
+During the first connection the handoff page offers **Copy stable connect
+address** for a one-time bookmark. The user creates a bookmark named *Connect
+AI* with that address; every later handoff is a single bookmark click.
 
 ## Complete the Chrome handoff
 
 When the newest local page titled **Connect AI agent to Chrome** appears, tell the
 user:
 
-> In the newest “Connect AI agent to Chrome” tab, click **Copy browser connection
-> address**, then press **Ctrl+L**, **Ctrl+V**, and **Enter**. Ignore or close older
-> Playwright Connect/error tabs.
+> In the newest “Connect AI agent to Chrome” tab, click your **Connect AI**
+> bookmark. First time only: click **Copy stable connect address**, open the
+> Bookmark manager with **Ctrl+Shift+O**, choose **Add new bookmark**, name it
+> *Connect AI*, paste the address into the URL field, and save. Without the
+> bookmark, click **Copy browser connection address**, then press **Ctrl+L**,
+> **Ctrl+V**, and **Enter**. Ignore or close older Playwright Connect/error tabs.
+
+The bookmark section appears on the page only when the relay shim is listening;
+the supervisor starts it with every connection. The stable address routes
+through the shim to the current relay and never changes between reboots,
+reconnects, or Playwright updates, so the bookmark keeps working. ChromeOS
+allows only browser-initiated navigation to the extension page:
+`garcon-url-handler` refuses the `chrome-extension://` scheme (exit 255,
+`Failure in OpenUrl`), web pages and other extensions cannot link to it, and
+CDP or command-line opens are blocked with `ERR_BLOCKED_BY_CLIENT`. The user's
+bookmark click, like the address-bar paste, is therefore a required step, not
+an automation gap.
 
 Then run:
 

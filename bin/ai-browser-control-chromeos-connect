@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Open a ChromeOS-safe handoff page for the browser-control relay URL."""
+"""Open a ChromeOS-safe handoff page for the browser-control relay URL.
+
+When the relay shim is running, the page prefers the one-click bookmark flow:
+the user clicks a previously created bookmark whose stable address routes
+through the shim. The classic copy-and-paste address remains as a fallback.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,8 @@ import socketserver
 import subprocess
 import sys
 import threading
+import urllib.parse
+import urllib.request
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 
@@ -88,8 +95,131 @@ def handoff_timeout_seconds() -> int:
     return timeout
 
 
-def build_page(connection_url: str, timeout_seconds: int) -> bytes:
+def relay_url_from(connection_url: str) -> str:
+    query = parse_qs(urlparse(connection_url).query)
+    values = query.get("mcpRelayUrl", [])
+    if len(values) != 1:
+        raise SystemExit("The extension connection URL is missing one mcpRelayUrl")
+    return values[0]
+
+
+def relay_url_file() -> str | None:
+    state_dir = os.environ.get("AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR")
+    session = os.environ.get("AI_BROWSER_CONTROL_CHROMEOS_SESSION")
+    if not state_dir or not session:
+        return None
+    if not session.replace("_", "").replace("-", "").replace(".", "").isalnum():
+        return None
+    return os.path.join(state_dir, f"handoff-{session}.url")
+
+
+def write_relay_url(connection_url: str) -> str | None:
+    """Publish the current relay address for the stable-address relay shim."""
+    target = relay_url_file()
+    if not target:
+        return None
+    try:
+        parent = os.path.dirname(target)
+        if parent:
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        temporary = f"{target}.tmp.{os.getpid()}"
+        with open(temporary, "w", encoding="ascii") as output:
+            output.write(f"{relay_url_from(connection_url)}\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, target)
+    except OSError as error:
+        # The classic copy-and-paste flow must keep working without the shim.
+        print(f"handoff: could not publish the relay address: {error}", file=sys.stderr)
+        return None
+    return target
+
+
+def stable_connection_url(connection_url: str, shim_port: int) -> str | None:
+    """Build the bookmarkable connect URL routed through the relay shim.
+
+    Returns None when the incoming URL cannot support a token-authenticated
+    automatic connection (no token or no protocolVersion from the engine).
+    """
+    parsed = urlparse(connection_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    token_values = query.get("token", [])
+    version_values = query.get("protocolVersion", [])
+    client_values = query.get("client", [])
+    if len(token_values) != 1 or not token_values[0]:
+        return None
+    if len(version_values) != 1 or not version_values[0].isdigit():
+        return None
+    token = token_values[0]
+    stable_relay = (
+        f"ws://127.0.0.1:{shim_port}/stable"
+        f"?token={urllib.parse.quote(token, safe='')}"
+    )
+    query_pairs = [
+        ("mcpRelayUrl", stable_relay),
+        ("protocolVersion", version_values[0]),
+        ("token", token),
+    ]
+    if client_values:
+        query_pairs.append(("client", client_values[0]))
+    return urlunparse(parsed._replace(query=urlencode(query_pairs)))
+
+
+def shim_status(shim_port: int) -> dict | None:
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{shim_port}/status", timeout=0.6
+        ) as response:
+            return json.load(response)
+    except (OSError, ValueError):
+        return None
+
+
+def build_page(connection_url: str, timeout_seconds: int, stable_url: str | None = None) -> bytes:
     safe_url = html.escape(connection_url, quote=True)
+    stable_json = json.dumps(stable_url)
+    bookmark_section = ""
+    stable_script = ""
+    if stable_url:
+        bookmark_section = f"""
+<section id="bookmark">
+  <p class="primary">Click your <strong>Connect AI</strong> bookmark in the bookmarks bar.</p>
+  <p>First time only: click <strong>Copy stable connect address</strong>, open the
+  Bookmark manager with <strong>Ctrl+Shift+O</strong>, choose <strong>Add new
+  bookmark</strong>, name it <em>Connect AI</em>, paste the address into the URL
+  field, and save. Later handoffs only need the bookmark click.</p>
+  <button id="copy-stable" type="button">Copy stable connect address</button>
+</section>
+<hr>
+<p class="muted">Fallback without the bookmark:</p>"""
+        stable_script = """
+const copyStableBtn = document.querySelector('#copy-stable');
+copyStableBtn.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(stableUrl);
+    copyStableBtn.disabled = true;
+    statusEl.textContent = 'Copied the stable address. Create the bookmark as described above.';
+  } catch (e) {
+    statusEl.textContent = 'Copy failed. The raw address is: ' + stableUrl;
+  }
+});
+const markConnected = () => {
+  statusEl.textContent = 'Connected. You can close this tab.';
+  copyBtn.disabled = true;
+  copyStableBtn.disabled = true;
+};
+statusEl.textContent = 'Waiting for the bookmark click…';
+const poll = setInterval(async () => {
+  try {
+    const response = await fetch('/state');
+    const state = await response.json();
+    if (state && state.connected) {
+      clearInterval(poll);
+      markConnected();
+      fetch('/connected', { method: 'POST', keepalive: true }).catch(() => {});
+    }
+  } catch (e) { /* keep polling */ }
+}, 1000);
+"""
     return f"""<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -101,15 +231,21 @@ button {{ font: inherit; padding: .75rem 1rem; cursor: pointer; margin-right: .5
 button:disabled {{ opacity: .5; cursor: default; }}
 code {{ overflow-wrap: anywhere; }}
 #status {{ margin-top: 1rem; }}
+.primary {{ font-size: 1.2rem; font-weight: 600; }}
+.muted {{ color: #555; }}
+hr {{ border: 0; border-top: 1px solid #ddd; margin: 1.5rem 0; }}
 </style>
 <h1>Connect AI agent to Chrome</h1>
-<p>ChromeOS requires the browser-control extension address to be pasted directly into the address bar.</p>
+{bookmark_section}
+<p>Click <strong>Copy browser connection address</strong>, then press
+<strong>Ctrl+L</strong>, <strong>Ctrl+V</strong>, and <strong>Enter</strong> in the
+address bar.</p>
 <button id="copy" type="button">Copy browser connection address</button>
-<p>Then press <strong>Ctrl+L</strong>, <strong>Ctrl+V</strong>, and <strong>Enter</strong>.</p>
 <p id="status" role="status"></p>
 <noscript>JavaScript is required to copy the address: <code>{safe_url}</code></noscript>
 <script>
 const connectionUrl = {json.dumps(connection_url)};
+const stableUrl = {stable_json};
 const statusEl = document.querySelector('#status');
 const copyBtn = document.querySelector('#copy');
 
@@ -123,6 +259,7 @@ copyBtn.addEventListener('click', async () => {{
     statusEl.textContent = 'Copy failed. The raw address is: ' + connectionUrl;
   }}
 }});
+{stable_script}
 </script>
 </html>""".encode("utf-8")
 
@@ -157,23 +294,45 @@ def remove_own_pid(pid_file: str | None) -> None:
 def main() -> None:
     connection_url = connection_url_from_argv()
     timeout_seconds = handoff_timeout_seconds()
-    page = build_page(connection_url, timeout_seconds)
+    write_relay_url(connection_url)
+
+    shim_port = 0
+    raw_port = os.environ.get("AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT", "")
+    if raw_port.isdigit() and 0 < int(raw_port) < 65536:
+        shim_port = int(raw_port)
+
+    stable_url = None
+    if shim_port and shim_status(shim_port):
+        stable_url = stable_connection_url(connection_url, shim_port)
+
+    page = build_page(connection_url, timeout_seconds, stable_url=stable_url)
     pid_file = record_pid()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
-            if self.path != "/":
-                self.send_error(404)
+            if self.path == "/":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(page)))
-            self.end_headers()
-            self.wfile.write(page)
+            if self.path == "/state":
+                status = shim_status(shim_port) if shim_port else None
+                connected = bool(status and status.get("activeConnections", 0) > 0)
+                body = json.dumps({"connected": connected}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_error(404)
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
-            if self.path != "/copied":
+            if self.path not in {"/copied", "/connected"}:
                 self.send_error(404)
                 return
             self.send_response(204)

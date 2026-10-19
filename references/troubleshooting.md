@@ -98,10 +98,36 @@ approval step to every handoff.
 
 ## `ERR_BLOCKED_BY_CLIENT`
 
-ChromeOS blocks Crostini applications and ordinary web pages from directly opening
-a `chrome-extension://` address. This is expected. Use the localhost handoff page
-created by `connect`; do not turn the extension address into an HTTP link or ask the
-user to click it.
+Chrome allows only browser-initiated navigation to the extension connect page.
+Every programmatic route is closed and this is expected:
+
+- `garcon-url-handler --url 'chrome-extension://...'` fails with exit 255 and
+  `Failure in OpenUrl` (verified live on ChromeOS).
+- Links or redirects from web pages, including the handoff page, are blocked.
+- CDP `Target.createTarget` and command-line or forwarded URL opens are blocked
+  on current Chrome (verified live with Chrome 154).
+
+Use the localhost handoff page created by `connect`: the user clicks the
+**Connect AI** bookmark (browser-initiated, like the address-bar paste) or falls
+back to copy and paste. Do not turn the extension address into an HTTP link or
+ask the user to click it.
+
+## The bookmark does not connect
+
+The bookmark address is stable, but two of its parts can become stale:
+
+- **Invalid token provided.** The extension token was regenerated. The user must
+  recreate the bookmark: run `reconnect`, open the new handoff page, click
+  **Copy stable connect address**, and update the bookmark URL.
+- **Unsupported client protocol.** A Playwright update changed the protocol
+  version while the bookmark still carries the old one. Recreate the bookmark
+  from a fresh handoff page the same way.
+
+If the handoff page shows no bookmark section at all, the relay shim is not
+listening. Check `logs 40` for `Relay shim ready on port` or a startup failure,
+run `SKILL_ROOT/scripts/doctor.sh`, and reinstall the runtime with
+`SKILL_ROOT/scripts/setup.sh --skip-cli-install`. The classic copy-and-paste
+flow keeps working without the shim.
 
 ## Durable service does not start
 

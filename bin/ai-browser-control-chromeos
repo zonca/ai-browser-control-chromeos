@@ -13,18 +13,35 @@ disconnect_misses="${AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES:-3}"
 health_timeout="${AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT:-10}"
 supervisor_mode="${AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR:-auto}"
 client_name="${AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME:-AI Browser Control}"
+attach_extension_timeout="${AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT:-300}"
 self="$(readlink -f "$0")"
 
 if [[ ! "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
   printf 'Invalid session name: use 1-64 letters, digits, dots, underscores, or hyphens.\n' >&2
   exit 2
 fi
+
+# Stable relay shim port: deterministic per session so the bookmarkable connect
+# address never changes between handoffs. Overridable for tests and isolation.
+shim_port="${AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT:-}"
+if [[ -z "$shim_port" ]]; then
+  shim_port=$(( 45731 + 16#$(printf '%s' "$session" | sha256sum | cut -c1-4) % 1000 ))
+elif [[ ! "$shim_port" =~ ^[0-9]+$ ]] || ((shim_port < 1 || shim_port > 65535)); then
+  printf 'AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT must be a valid TCP port.\n' >&2
+  exit 2
+fi
+export AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT="$shim_port"
+shim_script="${AI_BROWSER_CONTROL_CHROMEOS_SHIM:-"$(dirname "$self")/ai-browser-control-chromeos-relay-shim"}"
 if [[ "$supervisor_mode" != auto && "$supervisor_mode" != systemd && "$supervisor_mode" != foreground ]]; then
   printf 'AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR must be auto, systemd, or foreground.\n' >&2
   exit 2
 fi
 if [[ ! "$health_timeout" =~ ^[1-9][0-9]*$ ]]; then
   printf 'Health timeout must be a positive integer.\n' >&2
+  exit 2
+fi
+if [[ ! "$attach_extension_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT must be a positive integer.\n' >&2
   exit 2
 fi
 if [[ ! "$attach_ready_timeout" =~ ^[0-9]+$ || ! "$disconnect_misses" =~ ^[1-9][0-9]*$ ]]; then
@@ -199,6 +216,70 @@ stop_handoff() {
   rm -f "$handoff_pid_file"
 }
 
+shim_pid_file="$state_dir/shim-${session}.pid"
+
+shim_alive() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$shim_port") 2>/dev/null
+}
+
+shim_pid_from_file() {
+  [[ -r "$shim_pid_file" ]] || return 1
+  local pid command_line
+  pid="$(<"$shim_pid_file")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+  command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$command_line" == *"ai-browser-control-chromeos-relay-shim"* ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+start_relay_shim() {
+  if shim_alive; then
+    printf 'Relay shim is already listening on port %s.\n' "$shim_port"
+    return 0
+  fi
+  if [[ ! -x "$shim_script" ]]; then
+    printf 'Relay shim %s is not executable; the handoff falls back to copy and paste.\n' \
+      "$shim_script" >&2
+    return 1
+  fi
+  AI_BROWSER_CONTROL_CHROMEOS_SHIM_PARENT_PID=$$ setsid "$shim_script" >>"$log_file" 2>&1 &
+  local shim_pid waited
+  shim_pid=$!
+  waited=0
+  while ((waited < 50)); do
+    if shim_alive; then
+      printf 'Relay shim ready on port %s (pid %s).\n' "$shim_port" "$shim_pid"
+      local temporary="${shim_pid_file}.tmp.$$"
+      printf '%s\n' "$shim_pid" >"$temporary"
+      mv -f "$temporary" "$shim_pid_file"
+      return 0
+    fi
+    if ! kill -0 "$shim_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  printf 'Relay shim did not start on port %s; the handoff falls back to copy and paste.\n' \
+    "$shim_port" >&2
+  return 1
+}
+
+stop_relay_shim() {
+  local pid
+  if pid="$(shim_pid_from_file)"; then
+    kill "$pid" 2>/dev/null || true
+    for _ in {1..20}; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  rm -f "$shim_pid_file"
+}
+
 terminate_session_processes() {
   local environ_file pid command_line
   for environ_file in /proc/[0-9]*/environ; do
@@ -213,6 +294,7 @@ terminate_session_processes() {
       *"ai-browser-control-chromeos __connect-supervisor"*|\
       *"ai-browser-control-chromeos connect-foreground"*|\
       *"playwright-cli -s=$session attach"*|\
+      *"ai-browser-control-chromeos-relay-shim"*|\
       *"ai-browser-control-chromeos-connect"*)
         kill "$pid" 2>/dev/null || true
         ;;
@@ -244,6 +326,7 @@ start_systemd_connection() {
   terminate_session_processes
   rm -f "$pid_file"
   stop_handoff
+  stop_relay_shim
   : >"$log_file"
 
   systemd_args=(
@@ -271,6 +354,9 @@ start_systemd_connection() {
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLIENT_NAME=$client_name"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CLI=$playwright_cli"
     "--setenv=AI_BROWSER_CONTROL_CHROMEOS_CONNECT_HELPER=$connect_helper"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT=$shim_port"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT=$attach_extension_timeout"
+    "--setenv=AI_BROWSER_CONTROL_CHROMEOS_SHIM=$shim_script"
   )
   "${systemd_args[@]}" "${command_args[@]}"
 
@@ -339,6 +425,7 @@ start_foreground_connection() {
 
   rm -f "$pid_file"
   stop_handoff
+  stop_relay_shim
   : >"$log_file"
   printf 'Foreground connection supervisor starting.\n'
   if [[ "$persistent" == true ]]; then
@@ -406,12 +493,14 @@ run_supervisor() {
   done
 
   write_pid_file
-  trap remove_own_pid_file EXIT
+  trap 'stop_relay_shim; remove_own_pid_file' EXIT
   trap 'exit 0' TERM INT
   printf 'Connection supervisor ready (pid %s, session %s).\n' "$$" "$session"
 
   while true; do
-    if run_cli attach "--extension=$browser"; then
+    start_relay_shim || true
+    # Playwright expects PWTEST_EXTENSION_CONNECT_TIMEOUT in milliseconds.
+    if PWTEST_EXTENSION_CONNECT_TIMEOUT="$((attach_extension_timeout * 1000))" run_cli attach "--extension=$browser"; then
       if wait_for_attached_session; then
         printf 'Session %s is ready; monitoring connection health.\n' "$session"
       fi
@@ -520,6 +609,7 @@ disconnect_browser() {
   sleep 0.1
   terminate_session_processes
   stop_handoff
+  stop_relay_shim
   rm -f "$pid_file"
   printf 'Browser-control session %s stopped.\n' "$session"
 }

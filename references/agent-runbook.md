@@ -66,9 +66,18 @@ before continuing, because its job is to remain alive.
 
 Only when a new page titled **Connect AI agent to Chrome** opens, say:
 
-> In the newest “Connect AI agent to Chrome” tab, click **Copy browser connection
-> address**, then press **Ctrl+L**, **Ctrl+V**, and **Enter**. Ignore or close older
-> Playwright Connect/error tabs.
+> In the newest “Connect AI agent to Chrome” tab, click your **Connect AI**
+> bookmark. First time only: click **Copy stable connect address**, open the
+> Bookmark manager with **Ctrl+Shift+O**, choose **Add new bookmark**, name it
+> *Connect AI*, paste the address into the URL field, and save. Without the
+> bookmark, click **Copy browser connection address**, then press **Ctrl+L**,
+> **Ctrl+V**, and **Enter**. Ignore or close older Playwright Connect/error tabs.
+
+The page offers the bookmark flow only while the relay shim is listening; the
+connection supervisor starts the shim automatically and logs `Relay shim ready
+on port <port>`. The bookmark address is stable across reboots and reconnects.
+If the shim is missing, the page shows only the classic copy-and-paste flow,
+which always works.
 
 Do not ask the user to run commands, copy diagnostic output into chat, or keep trying
 old Connect tabs.
@@ -177,9 +186,12 @@ advanced isolation:
 | `AI_BROWSER_CONTROL_CHROMEOS_OUTPUT_DIR` | `/tmp/ai-browser-control-chromeos-$UID` | Playwright artifacts |
 | `AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR` | `auto` | `auto`, `systemd`, or `foreground` |
 | `AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT` | `10` | Seconds allowed for initial session registration |
+| `AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT` | `300` | Seconds the engine waits for the extension handoff (Playwright's own default is 30) |
 | `AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES` | `3` | Consecutive explicit not-open responses before exit |
 | `AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT` | `10` | Seconds allowed for a read-only health check; timeout preserves the relay |
 | `AI_BROWSER_CONTROL_CHROMEOS_POLL_INTERVAL` | `15` | Seconds between health checks |
+| `AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT` | `45731 + sha256(session) mod 1000` | Fixed loopback port of the relay shim behind the bookmark address |
+| `AI_BROWSER_CONTROL_CHROMEOS_SHIM` | `<wrapper directory>/ai-browser-control-chromeos-relay-shim` | Relay shim script path |
 
 The runtime uses `STATE_DIR/cli-workspace/.playwright` as a stable private workspace
 for service and terminal calls. Do not invoke raw commands from another directory

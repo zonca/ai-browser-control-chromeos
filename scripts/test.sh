@@ -14,6 +14,16 @@ lifecycle_browser_state="$lifecycle_state/fake-browser-state"
 lifecycle_attach_count="$lifecycle_state/fake-attach-count"
 lifecycle_attach_delay="$lifecycle_state/fake-attach-delay"
 lifecycle_unit="ai-browser-control-chromeos-${UID}-${lifecycle_session}.service"
+lifecycle_shim_port="$(
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+lifecycle_shim_pid_file="$lifecycle_state/shim-${lifecycle_session}.pid"
 
 cleanup() {
   HOME="$lifecycle_home" \
@@ -36,6 +46,7 @@ trap cleanup EXIT
 chmod 700 \
   "$root/bin/ai-browser-control-chromeos" \
   "$root/bin/ai-browser-control-chromeos-connect" \
+  "$root/bin/ai-browser-control-chromeos-relay-shim" \
   "$root/scripts/setup.sh" \
   "$root/scripts/doctor.sh" \
   "$root/scripts/test.sh"
@@ -49,6 +60,7 @@ bash -n \
 PYTHONPYCACHEPREFIX="$cache_dir" python3 -m py_compile \
   "$root/bin/ai-browser-control-chromeos-connect" \
   "$root/scripts/summarize.py"
+node --check "$root/bin/ai-browser-control-chromeos-relay-shim"
 node --check "$root/scripts/summarizeFeed.js"
 python3 -m json.tool "$root/evals/evals.json" >/dev/null
 
@@ -97,6 +109,9 @@ documentation_contract = {
         "mcpRelayUrl",
         "Do not invoke raw `playwright-cli attach`",
         "references/agent-runbook.md",
+        "Copy stable connect address",
+        "relay shim",
+        "Failure in OpenUrl",
     ),
     "references/agent-runbook.md": (
         "Deterministic start sequence",
@@ -109,6 +124,10 @@ documentation_contract = {
         "rerun `status`, and connect once only if now disconnected",
         "AI_BROWSER_CONTROL_CHROMEOS_SESSION=research",
         "Never substitute raw `playwright-cli attach`",
+        "Copy stable connect address",
+        "Relay shim ready",
+        "AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT",
+        "AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT",
     ),
 }
 documents = {"SKILL.md": skill, "references/agent-runbook.md": runbook}
@@ -147,6 +166,69 @@ for expected in (
         raise SystemExit(f"The handoff page is missing: {expected}")
 if "Session expires" in page or "countdown" in page:
     raise SystemExit("The handoff page still claims the relay expires on a UI timer")
+if "copy-stable" in page:
+    raise SystemExit("The classic page must not offer the bookmark flow")
+
+# Relay publication and stable bookmark address construction.
+import json
+import os
+import tempfile
+from urllib.parse import parse_qs as url_parse_qs
+from urllib.parse import urlparse
+
+tokenized_url = helper.normalize_connection_url(
+    f"chrome-extension://{helper.EXTENSION_ID}/connect.html"
+    "?mcpRelayUrl=ws%3A%2F%2F127.0.0.1%3A42281%2Fextension%2F4968ba0f"
+    "&protocolVersion=2&token=not-a-real-token"
+)
+relay = helper.relay_url_from(tokenized_url)
+if relay != "ws://127.0.0.1:42281/extension/4968ba0f":
+    raise SystemExit(f"Unexpected relay address: {relay}")
+
+stable = helper.stable_connection_url(tokenized_url, 45731)
+if stable is None:
+    raise SystemExit("A tokenized connection URL must produce a stable address")
+parsed_stable = urlparse(stable)
+if parsed_stable.scheme != "chrome-extension" or parsed_stable.netloc != helper.EXTENSION_ID:
+    raise SystemExit(f"Unexpected stable address scheme: {stable}")
+stable_query = url_parse_qs(parsed_stable.query)
+inner = urlparse(stable_query["mcpRelayUrl"][0])
+if inner.hostname != "127.0.0.1" or inner.port != 45731 or inner.path != "/stable":
+    raise SystemExit(f"Unexpected stable relay address: {stable_query['mcpRelayUrl'][0]}")
+if url_parse_qs(inner.query).get("token") != ["not-a-real-token"]:
+    raise SystemExit("The stable relay address is missing the token")
+if stable_query.get("protocolVersion") != ["2"] or stable_query.get("token") != ["not-a-real-token"]:
+    raise SystemExit(f"The stable address lost engine parameters: {stable}")
+if helper.stable_connection_url(normalized_url, 45731) is not None:
+    raise SystemExit("A URL without a token must not produce a stable address")
+
+stable_page = helper.build_page(
+    tokenized_url, helper.DEFAULT_HANDOFF_TIMEOUT_SECONDS, stable_url=stable
+).decode()
+for expected in (
+    "Connect AI</strong> bookmark",
+    "copy-stable",
+    "fetch('/state')",
+    "fetch('/connected'",
+    "Copy browser connection address",
+):
+    if expected not in stable_page:
+        raise SystemExit(f"The bookmark handoff page is missing: {expected}")
+if json.dumps(stable) not in stable_page:
+    raise SystemExit("The bookmark handoff page does not embed the stable address")
+
+publish_dir = tempfile.mkdtemp()
+os.environ["AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR"] = publish_dir
+os.environ["AI_BROWSER_CONTROL_CHROMEOS_SESSION"] = "unittest"
+published = helper.write_relay_url(tokenized_url)
+expected_path = os.path.join(publish_dir, "handoff-unittest.url")
+if published != expected_path or not os.path.isfile(expected_path):
+    raise SystemExit(f"Unexpected relay URL file: {published}")
+with open(expected_path) as source:
+    if source.read().strip() != relay:
+        raise SystemExit("The published relay address does not match the connection URL")
+if os.stat(expected_path).st_mode & 0o777 != 0o600:
+    raise SystemExit("The published relay address must be mode 600")
 PY
 
 "$root/scripts/setup.sh" --help >/dev/null
@@ -191,6 +273,209 @@ set -e
 [[ "$missing_relay_output" == *'missing one mcpRelayUrl'* ]]
 
 mkdir -p "$lifecycle_home" "$lifecycle_state"
+
+# Relay shim: token validation, stable-path forwarding, upstream rewrite, lifecycle.
+shim_state="$cache_dir/shim-state"
+mkdir -p "$shim_state"
+printf '%s\n' 'shim-test-token' >"$cache_dir/shim-token"
+chmod 600 "$cache_dir/shim-token"
+python3 - "$root" "$shim_state" "$cache_dir/shim-token" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import secrets
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+
+root, state_dir, token_file = sys.argv[1], sys.argv[2], sys.argv[3]
+shim_script = os.path.join(root, "bin", "ai-browser-control-chromeos-relay-shim")
+session = "shimtest"
+token = "shim-test-token"
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+class FakeUpstream(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.seen_paths = []
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.sock.listen(8)
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
+
+    def serve(self, conn):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                conn.close()
+                return
+            data += chunk
+        path = data.split(b"\r\n")[0].decode().split(" ")[1]
+        self.seen_paths.append(path)
+        conn.sendall(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Accept: placeholder\r\n\r\n"
+        )
+        conn.sendall(b"UPSTREAM-SAW:" + path.encode() + b"\r\n")
+        try:
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                conn.sendall(chunk)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+
+def ws_connect(port, path):
+    key = base64.b64encode(secrets.token_bytes(16)).decode()
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    lines = [
+        f"GET {path} HTTP/1.1",
+        f"Host: 127.0.0.1:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Key: {key}",
+        "Sec-WebSocket-Version: 13",
+        "Origin: chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm",
+    ]
+    s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+    return s
+
+
+def read_head(s):
+    s.settimeout(5)
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    head, _, rest = data.partition(b"\r\n\r\n")
+    return head, rest
+
+
+shim_port = free_port()
+env = dict(os.environ)
+env.update(
+    AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT=str(shim_port),
+    AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR=state_dir,
+    AI_BROWSER_CONTROL_CHROMEOS_SESSION=session,
+    AI_BROWSER_CONTROL_CHROMEOS_TOKEN_FILE=token_file,
+)
+shim = subprocess.Popen(
+    ["node", shim_script], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+)
+url_file = os.path.join(state_dir, f"handoff-{session}.url")
+try:
+    deadline = time.time() + 5
+    while True:
+        try:
+            status = json.load(urllib.request.urlopen(f"http://127.0.0.1:{shim_port}/status", timeout=1))
+            break
+        except OSError:
+            if time.time() > deadline:
+                raise SystemExit("The relay shim did not start listening")
+            time.sleep(0.1)
+    if status["session"] != session or status["upstreamReady"] or status["activeConnections"]:
+        raise SystemExit(f"Unexpected shim status before handoff: {status}")
+
+    s = ws_connect(shim_port, "/stable?token=" + token)
+    head, _ = read_head(s)
+    if not head.startswith(b"HTTP/1.1 503"):
+        raise SystemExit("A missing upstream must be rejected with 503")
+    s.close()
+
+    upstream = FakeUpstream()
+    upstream.start()
+    with open(url_file, "w") as output:
+        output.write(f"ws://127.0.0.1:{upstream.port}/extension/4968ba0f-0000-0000-0000-000000000000\n")
+    os.chmod(url_file, 0o600)
+
+    s = ws_connect(shim_port, "/stable?token=wrong-token")
+    head, _ = read_head(s)
+    if not head.startswith(b"HTTP/1.1 403"):
+        raise SystemExit("An invalid token must be rejected with 403")
+    s.close()
+
+    s = ws_connect(shim_port, "/not-stable?token=" + token)
+    head, _ = read_head(s)
+    if not head.startswith(b"HTTP/1.1 404"):
+        raise SystemExit("An unexpected path must be rejected with 404")
+    s.close()
+
+    s = ws_connect(shim_port, "/stable?token=" + token)
+    head, rest = read_head(s)
+    if not head.startswith(b"HTTP/1.1 101"):
+        raise SystemExit(f"The shim did not proxy the upgrade: {head[:60]!r}")
+    deadline = time.time() + 5
+    while b"UPSTREAM-SAW:" not in rest and time.time() < deadline:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        rest += chunk
+    if b"UPSTREAM-SAW:/extension/4968ba0f-0000-0000-0000-000000000000" not in rest:
+        raise SystemExit("The upstream did not receive the rewritten relay path")
+    s.sendall(b"roundtrip")
+    echoed = b""
+    deadline = time.time() + 5
+    while b"roundtrip" not in echoed and time.time() < deadline:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        echoed += chunk
+    if b"roundtrip" not in echoed:
+        raise SystemExit("Bytes did not flow back through the shim")
+    s.close()
+    time.sleep(0.3)
+    status = json.load(urllib.request.urlopen(f"http://127.0.0.1:{shim_port}/status", timeout=1))
+    if status["activeConnections"] != 0 or not status["upstreamReady"]:
+        raise SystemExit(f"Unexpected shim status after disconnect: {status}")
+
+    # A dead upstream must fail cleanly instead of accepting the upgrade.
+    dead_port = free_port()
+    with open(url_file, "w") as output:
+        output.write(f"ws://127.0.0.1:{dead_port}/extension/deadbeef\n")
+    s = ws_connect(shim_port, "/stable?token=" + token)
+    head, _ = read_head(s)
+    if not head.startswith(b"HTTP/1.1 503"):
+        raise SystemExit("A dead upstream must be rejected with 503")
+    s.close()
+finally:
+    shim.terminate()
+    try:
+        shim.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        shim.kill()
+        raise SystemExit("The relay shim did not stop on SIGTERM")
+print("relay shim checks passed")
+PY
 printf '%s\n' 'test-token-not-secret' >"$lifecycle_token_file"
 chmod 600 "$lifecycle_token_file"
 printf '%s\n' '0.2' >"$lifecycle_attach_delay"
@@ -221,6 +506,10 @@ case "$command" in
     printf '%s\n' "$((count + 1))" >"$attach_count"
     printf '%s pid=%s ppid=%s attach-start count=%s\n' \
       "$(date +%s.%N)" "$$" "$PPID" "$((count + 1))" >>"$trace"
+    printf '%s\n' "${PWTEST_EXTENSION_CONNECT_TIMEOUT:-missing}" \
+      >"$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/fake-attach-timeout"
+    printf 'ws://127.0.0.1:9/extension/fake-upstream\n' \
+      >"$AI_BROWSER_CONTROL_CHROMEOS_STATE_DIR/handoff-${session}.url"
     sleep "$(<"$attach_delay")"
     printf '%s\n' 'open' >"$browser_state"
     printf '%s\n' "$(( $(date +%s%N) + 250000000 ))" >"$list_ready_at"
@@ -271,7 +560,37 @@ lifecycle_env=(
   AI_BROWSER_CONTROL_CHROMEOS_ATTACH_READY_TIMEOUT=2
   AI_BROWSER_CONTROL_CHROMEOS_DISCONNECT_MISSES=3
   AI_BROWSER_CONTROL_CHROMEOS_HEALTH_TIMEOUT=1
+  AI_BROWSER_CONTROL_CHROMEOS_SHIM_PORT="$lifecycle_shim_port"
+  AI_BROWSER_CONTROL_CHROMEOS_ATTACH_EXTENSION_TIMEOUT=77
 )
+
+shim_listening() {
+  (exec 3<>"/dev/tcp/127.0.0.1/$lifecycle_shim_port") 2>/dev/null
+}
+
+wait_for_shim_listening() {
+  local attempt
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if shim_listening; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  printf 'Timed out waiting for the relay shim on port %s.\n' "$lifecycle_shim_port" >&2
+  return 1
+}
+
+wait_for_shim_stopped() {
+  local attempt
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if ! shim_listening; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  printf 'The relay shim is still listening on port %s after shutdown.\n' "$lifecycle_shim_port" >&2
+  return 1
+}
 
 printf '%s\n' open >"$lifecycle_browser_state"
 verify_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" verify)"
@@ -407,11 +726,24 @@ if [[ "$systemd_usable" == true ]]; then
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
   status_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status)"
   [[ "$status_output" == connected:* ]]
+  [[ "$(<"$lifecycle_state/fake-attach-timeout")" == $((77 * 1000)) ]]
+  wait_for_shim_listening
+  shim_status_session="$(
+    python3 - "$lifecycle_shim_port" <<'PY'
+import json
+import sys
+import urllib.request
+print(json.load(urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/status", timeout=2))["session"])
+PY
+  )"
+  [[ "$shim_status_session" == "$lifecycle_session" ]]
   log_output="$(env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" logs 40)"
   [[ "$log_output" == *'[REDACTED]'* ]]
   [[ "$log_output" != *'test-token-not-secret'* ]]
   check_inconclusive_health "$first_pid"
+  wait_for_shim_listening
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+  wait_for_shim_stopped
 
   if env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" status >/dev/null; then
     printf '%s\n' 'Expected disconnected status to return nonzero.' >&2
@@ -424,7 +756,9 @@ if [[ "$systemd_usable" == true ]]; then
   for _ in {1..5}; do
     env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" connect >/dev/null
     env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+    wait_for_shim_listening
     env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+    wait_for_shim_stopped
   done
 
   count_before=0
@@ -444,7 +778,9 @@ if [[ "$systemd_usable" == true ]]; then
   rm -f "$lifecycle_browser_state"
   wait_for_attach_count "$((count_before + 3))" || exit 1
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
+  wait_for_shim_listening
   env "${lifecycle_env[@]}" "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
+  wait_for_shim_stopped
 else
   printf '%s\n' 'SKIP  durable systemd integration (user service manager unavailable)'
 fi
@@ -476,6 +812,7 @@ wait_for_attach_count "$((count_before + 1))" || exit 1
 env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" wait 5 >/dev/null
 check_inconclusive_health "$foreground_pid"
+wait_for_shim_listening
 env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
   "$root/bin/ai-browser-control-chromeos" disconnect >/dev/null
 for _ in {1..50}; do
@@ -483,7 +820,36 @@ for _ in {1..50}; do
   sleep 0.05
 done
 ! kill -0 "$foreground_pid" 2>/dev/null
+wait_for_shim_stopped
 [[ "$(cat "$foreground_log")" == *'Foreground connection supervisor starting'* ]]
+
+# A hard-killed supervisor cannot run its cleanup trap; the shim watchdog
+# must notice the dead parent and exit by itself.
+env "${lifecycle_env[@]}" AI_BROWSER_CONTROL_CHROMEOS_SUPERVISOR=foreground \
+  "$root/bin/ai-browser-control-chromeos" connect-foreground --persistent \
+  >"$foreground_log" 2>&1 &
+foreground_pid=$!
+for _ in {1..50}; do
+  [[ -r "$lifecycle_pid_file" ]] && break
+  sleep 0.05
+done
+wait_for_attach_count "$((count_before + 2))" || exit 1
+wait_for_shim_listening
+kill -9 "$foreground_pid"
+for _ in {1..50}; do
+  ! kill -0 "$foreground_pid" 2>/dev/null && break
+  sleep 0.05
+done
+for _ in {1..200}; do
+  if ! shim_listening; then
+    break
+  fi
+  sleep 0.05
+done
+if shim_listening; then
+  printf '%s\n' 'The relay shim outlived a hard-killed supervisor.' >&2
+  exit 1
+fi
 
 # Slow initial readiness must preserve normal supervision, not just persistent mode.
 printf '%s\n' error >"$lifecycle_state/fake-health-mode"
