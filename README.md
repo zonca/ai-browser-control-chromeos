@@ -101,6 +101,10 @@ To update such a checkout, run:
 git -C ~/p/software/ai-browser-control-chromeos pull
 ```
 
+A checkout cloned directly into `~/.agents/skills/ai-browser-control-chromeos`
+(without the symlink) works the same way; update it with
+`git -C ~/.agents/skills/ai-browser-control-chromeos pull`.
+
 Do not run `setup.sh` on these machines: it would demand the extension token
 and install a wrapper that cannot reach the ChromeOS browser. Agents on those
 machines invoke `ai-browser-control-chromeos` on the Chromebook itself, for
