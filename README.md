@@ -301,6 +301,17 @@ These runs cover skill discovery and warm-session reuse. The automated suite
 continues to cover connection lifecycle, reconnect behavior, redaction, durable
 supervision, and cross-process verification.
 
+## Live bookmark handoff verification
+
+Verified live on ChromeOS on 2026-10-19 with the real Chrome Web Store extension
+(v0.4.0), the real `@playwright/cli` 0.1.22 relay, and the relay shim: after a
+fresh `connect`, the user clicked a previously created **Connect AI** bookmark
+and the session connected with no other interaction. The connected page's
+address was the stable shim address (`ws://127.0.0.1:46556/stable`), and
+`verify` passed both cross-process checks. A hermetic run on the same day also
+proved the bookmark address is byte-identical across a full disconnect and
+reconnect while the relay's port and UUID path change behind the shim.
+
 ## Security
 
 - The extension token is stored outside the repository with permission mode `600`.
