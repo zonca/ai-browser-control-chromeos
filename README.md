@@ -79,6 +79,33 @@ Use another agent skill directory when needed:
 Or set `AGENT_SKILLS_DIR` before running setup. Use `--no-skill-install` when only
 the browser command should be installed.
 
+### Other machines (skill reference only)
+
+The runtime (relay, shim, handoff helper) works only on the Chromebook: it needs
+Crostini, `garcon-url-handler`, and the ChromeOS Chrome profile that has the
+Playwright extension installed. On other machines, keep a checkout of this
+repository linked into the agent skills directory so agents there always read
+the current instructions while driving the Chromebook browser over SSH:
+
+```bash
+git clone https://github.com/zonca/ai-browser-control-chromeos.git \
+  ~/p/software/ai-browser-control-chromeos
+mkdir -p ~/.agents/skills
+ln -s ~/p/software/ai-browser-control-chromeos \
+  ~/.agents/skills/ai-browser-control-chromeos
+```
+
+To update such a checkout, run:
+
+```bash
+git -C ~/p/software/ai-browser-control-chromeos pull
+```
+
+Do not run `setup.sh` on these machines: it would demand the extension token
+and install a wrapper that cannot reach the ChromeOS browser. Agents on those
+machines invoke `ai-browser-control-chromeos` on the Chromebook itself, for
+example through `ssh zhromebook`.
+
 ### OpenCode
 
 OpenCode can auto-load skills from `~/.agents/skills`, but some releases do not
